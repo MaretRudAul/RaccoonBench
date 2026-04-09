@@ -39,12 +39,14 @@ We evaluate systems
 
 ## Usage
 
+Note: In the upstream dataset layout, the GPT system prompts live in `Data/GPTs50/` and `Data/GPTs146/` (each subfolder contains a `system_prompt.md`). The README examples below use `Data/GPTs146` by default.
+
 #### 1. Run benchmark on Singular attacks, Defenseless GPTs, GPT-3.5-0125
 
 ```shell
 python run_raccoon_gang.py \
 --model_name gpt-3.5-0125 \
---gpts_path "./Data/gpts/gpts196" \
+--gpts_path "./Data/GPTs146" \
 --attack_path "./Data/attacks/singular_attacks" \
 --ref_def_path "./Data/reference/gpts196_defense_prompt.json" \
 --def_tmpl_path "./Data/defenses/defense_template.json" \
@@ -81,7 +83,7 @@ python run_raccoon_gang.py \
   --provider openrouter \
   --model_name llama3.1_8b_openrouter \
   --enable_multilingual_attacks \
-  --gpts_path "./Data/gpts/gpts196" \
+  --gpts_path "./Data/GPTs146" \
   --attack_path "./Data/attacks/singular_attacks_deflesstop5" \
   --ref_def_path "./Data/reference/gpts196_defense_prompt.json" \
   --def_tmpl_path "./Data/defenses/defense_template.json" \
@@ -109,7 +111,7 @@ python scripts/summarize_multilingual_results.py --results_dir "results/run_YYYY
 ```shell
 python run_raccoon_gang.py \
 --model_name gpt-3.5-0125 \
---gpts_path "./Data/gpts/gpts196" \
+--gpts_path "./Data/GPTs146" \
 --attack_path "./Data/attacks/singular_attacks_deflesstop5" \
 --ref_def_path "./Data/reference/gpts196_defense_prompt.json" \
 --def_tmpl_path "./Data/defenses/defense_template.json" \
@@ -122,7 +124,7 @@ python run_raccoon_gang.py \
 ```shell
 python run_raccoon_gang.py \
 --model_name gpt-3.5-0125 \
---gpts_path "./Data/gpts/gpts196" \
+--gpts_path "./Data/GPTs146" \
 --attack_path "./Data/attacks/compound_attacks" \
 --ref_def_path "./Data/reference/gpts196_defense_prompt.json" \
 --def_tmpl_path "./Data/defenses/defense_template.json" \
@@ -135,7 +137,7 @@ python run_raccoon_gang.py \
 ```shell
 python run_raccoon_gang.py \
 --model_name gpt-3.5-0125 \
---gpts_path "./Data/gpts/gpts196" \
+--gpts_path "./Data/GPTs146" \
 --attack_path "./Data/attacks/compound_attacks" \
 --ref_def_path "./Data/reference/gpts196_defense_prompt.json" \
 --def_tmpl_path "./Data/defenses/defense_template.json" \
