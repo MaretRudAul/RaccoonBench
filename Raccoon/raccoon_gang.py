@@ -366,6 +366,11 @@ class RaccoonGang:
                         atk_prompt.category,
                         atk_prompt.get_att_prompt(),
                     ]
+                    saved_dict[i][cus_def_name]["attack_prompt_name"] = getattr(
+                        atk_prompt, "name", None
+                    )
+                    if hasattr(atk_prompt, "get_metadata"):
+                        saved_dict[i][cus_def_name]["attack_prompt_meta"] = atk_prompt.get_metadata()
                     saved_dict[i][cus_def_name]["runs"] = []
 
                     pbar = tqdm(

@@ -1,11 +1,24 @@
 import json
 import logging
 import argparse
+import os
+from pathlib import Path
+
+# Optional: load env vars from repo-root `.env` automatically.
+# This avoids requiring `source .env` in every terminal session.
+try:
+    from dotenv import load_dotenv  # type: ignore
+
+    load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=False)
+except Exception:
+    pass
 
 from Raccoon.loader import Loader, AttLoader
 from Raccoon.raccoon_gang import RaccoonGang
 from Raccoon.prompt import AttPrompt
 from Raccoon.utils import load_model
+from Raccoon.translation_utils import AttackTranslator
+from Raccoon.multilingual_attacks import expand_attack_prompts_multilingual
 
 from config import API_BASE, API_KEY
 
@@ -17,6 +30,20 @@ Models = {
     "mixtral_8x7B": "mistralai/Mixtral-8X7B-Instruct-v0.1",
     "gpt-3.5-0613": "gpt-3.5-turbo-0613",
     "gpt-3.5-0125": "gpt-3.5-turbo-0125",
+    # Newer OpenAI model
+    "gpt-5.4-nano": "gpt-5.4-nano",
+    # Optional pinned snapshot (behavior-locked)
+    "gpt-5.4-nano-2026-03-17": "gpt-5.4-nano-2026-03-17",
+    # OpenRouter-hosted defaults (override via env vars if desired)
+    "llama3.1_8b_openrouter": os.getenv(
+        "OPENROUTER_LLAMA31_8B_MODEL", "meta-llama/llama-3.1-8b-instruct"
+    ),
+    "mixtral_8x7b_openrouter": os.getenv(
+        "OPENROUTER_MIXTRAL_8X7B_MODEL", "mistralai/mixtral-8x7b-instruct"
+    ),
+    # OpenRouter additional options
+    "llama3.3_70b_instruct_openrouter": "meta-llama/llama-3.3-70b-instruct",
+    "gpt-5.4-nano_openrouter": "openai/gpt-5.4-nano",
 }  # "gemini-pro"
 
 
@@ -28,6 +55,12 @@ if __name__ == "__main__":
     )
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", type=str, default="gpt-3.5")
+    parser.add_argument(
+        "--provider",
+        type=str,
+        default="auto",
+        help="Model provider: auto|openai|openrouter|gemini",
+    )
     parser.add_argument("--gpts_path", type=str)
     parser.add_argument("--attack_path", type=str)
     parser.add_argument(
@@ -47,13 +80,33 @@ if __name__ == "__main__":
         "--use_original_user_defenses", action="store_true", default=False
     )
     parser.add_argument("--use_custom_defenses", action="store_true", default=False)
+    parser.add_argument(
+        "--enable_multilingual_attacks",
+        action="store_true",
+        default=False,
+        help="Expand each base English attack into EN/BN/ZU/BN+ZU variants.",
+    )
+    parser.add_argument(
+        "--translation_model",
+        type=str,
+        default=None,
+        help="Optional translation model override (OpenRouter/OpenAI-compatible). "
+        "If not set, uses RACCOON_TRANSLATION_MODEL or a default.",
+    )
+    parser.add_argument(
+        "--translation_provider",
+        type=str,
+        default="auto",
+        help="Translation provider: auto|openai|openrouter. "
+        "Defaults to auto (can also set RACCOON_TRANSLATION_PROVIDER).",
+    )
     args = parser.parse_args()
 
     GPTS_PATH = args.gpts_path
     REF_DEF_PATH = args.ref_def_path
     DEF_TEMPLATE_PATH = args.def_tmpl_path
     ATT_PATH = args.attack_path
-    model_used = Models[args.model_name]
+    model_used = Models.get(args.model_name, args.model_name)
     organization = False
     suc_threshold = 0.8
     if organization:
@@ -84,6 +137,14 @@ custom_defense_name: {custom_defense_name} multi_turn: {multi_turn}"
     print(settings)
     atk_loader = AttLoader(ATT_PATH)
     atk_prompts = AttPrompt.load_all_attacks(atk_loader)
+
+    if args.enable_multilingual_attacks:
+        # Translation is LLM-based and cached. Default: OpenRouter (cheap hosted models).
+        translator = AttackTranslator.from_env(
+            provider=args.translation_provider,
+            model=args.translation_model,
+        )
+        atk_prompts = expand_attack_prompts_multilingual(atk_prompts, translator, include_mixed_bn_zu=True)
     gpts_loader = Loader(GPTS_PATH)
     ref_defenses = json.load(open(REF_DEF_PATH, encoding="utf-8"))
     def_templates = json.load(open(DEF_TEMPLATE_PATH, encoding="utf-8"))
@@ -92,9 +153,15 @@ custom_defense_name: {custom_defense_name} multi_turn: {multi_turn}"
         custom_defenses = [(name, def_templates[name]) for name in custom_defense_name]
     sys_template = "Default"
     if not organization:
-        client = load_model(model_used, API_BASE, API_KEY, organization=organization)
+        client = load_model(
+            model_used,
+            API_BASE,
+            API_KEY,
+            organization=organization,
+            provider=args.provider,
+        )
     else:
-        client = load_model(model_used, organization=organization)
+        client = load_model(model_used, organization=organization, provider=args.provider)
     print(f"using client: {client}")
     raccoon = RaccoonGang(
         gpts_loader,
@@ -110,6 +177,7 @@ custom_defense_name: {custom_defense_name} multi_turn: {multi_turn}"
         atk_budget=atk_budget,
         streaming=streaming,
     )
+    print(f"Results will be saved to: {raccoon.save_path}")
     benchmark_result = raccoon.benchmark(
         use_sys_template=use_sys_template,
         use_defenseless_user_prompt=use_defenseless_user_prompt,

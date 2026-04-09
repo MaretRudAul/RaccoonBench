@@ -1,0 +1,30 @@
+# Pip requirements for Linux/macOS.
+#
+# This repo's existing `requirements.txt` is a conda explicit export (and is Windows-pinned),
+# so it cannot be installed via `pip install -r requirements.txt`.
+#
+# Usage:
+#   python3 -m venv .venv
+#   source .venv/bin/activate
+#   pip install -U pip
+#   pip install -r linux_requirements.txt
+
+# OpenAI / OpenRouter (OpenAI-compatible) client
+openai>=1.10.0
+httpx>=0.26.0
+
+# Gemini client (only needed if you run --provider gemini; harmless otherwise)
+google-generativeai>=0.3.2
+
+# Benchmark utilities
+tqdm>=4.66.0
+ratelimit>=2.2.1
+
+# Leakage scoring (ROUGE-L) + tokenizer
+rouge-score>=0.1.2
+tiktoken>=0.5.2
+nltk>=3.8.1
+
+# Optional convenience for loading `.env` automatically in custom scripts
+python-dotenv>=1.0.0
+

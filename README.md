@@ -52,6 +52,58 @@ python run_raccoon_gang.py \
 --use_defenseless_user_prompt
 ```
 
+#### Multilingual attack expansion (EN/BN/ZU/BN+ZU)
+
+This mode keeps the hidden/system prompt in English and expands each base English attack prompt into 4 variants:
+
+- `EN` (original)
+- `BN` (Bengali translation)
+- `ZU` (Zulu translation)
+- `BN+ZU` (first half Bengali + second half Zulu; deterministic split)
+
+Translation is LLM-based, deterministic (temperature 0), and cached on disk.
+
+`.env` support:
+
+- Put your `.env` in the repo root (same folder as `run_raccoon_gang.py`).
+- `run_raccoon_gang.py` will automatically load it **if** `python-dotenv` is installed.
+- If you do not want to install `python-dotenv`, you can instead load it in your shell:
+
+```shell
+set -a; source .env; set +a
+```
+
+Example (OpenRouter + Llama 3.1 8B Instruct):
+
+```shell
+export OPENROUTER_API_KEY="..."   # required
+python run_raccoon_gang.py \
+  --provider openrouter \
+  --model_name llama3.1_8b_openrouter \
+  --enable_multilingual_attacks \
+  --gpts_path "./Data/gpts/gpts196" \
+  --attack_path "./Data/attacks/singular_attacks_deflesstop5" \
+  --ref_def_path "./Data/reference/gpts196_defense_prompt.json" \
+  --def_tmpl_path "./Data/defenses/defense_template.json" \
+  --use_sys_template \
+  --use_defenseless_user_prompt
+```
+
+Optional environment variables:
+
+- `RACCOON_TRANSLATION_MODEL`: translation model id. Default: `gpt-5.4-nano`
+- `RACCOON_TRANSLATION_PROVIDER`: `auto|openai|openrouter` (default: `auto`). In `auto`, model ids with `/` or `:` use OpenRouter, otherwise OpenAI.
+- `RACCOON_TRANSLATION_CACHE_PATH`: translation cache JSON path. Default: `.cache/raccoon_translation_cache.json`
+- `OPENROUTER_LLAMA31_8B_MODEL`: override `llama3.1_8b_openrouter` model id
+- `OPENROUTER_MIXTRAL_8X7B_MODEL`: override `mixtral_8x7b_openrouter` model id
+- `OPENROUTER_HTTP_REFERER`, `OPENROUTER_APP_TITLE`: optional OpenRouter headers
+
+Minimal result summary by variant:
+
+```shell
+python scripts/summarize_multilingual_results.py --results_dir "results/run_YYYYMMDD_HHMMSS"
+```
+
 #### 2. Run benchmark on Top 5 Singular attacks, Defended GPTs, GPT-3.5-0125
 
 ```shell

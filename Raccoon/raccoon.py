@@ -291,6 +291,9 @@ class Raccoon:
                 continue
             print(f"Running attack {i}...atk_prompt: \n{atk_prompt.get_att_prompt()}")
             saved_dict[i]["attack_prompt"] = [atk_prompt.category, atk_prompt.get_att_prompt()]
+            saved_dict[i]["attack_prompt_name"] = getattr(atk_prompt, "name", None)
+            if hasattr(atk_prompt, "get_metadata"):
+                saved_dict[i]["attack_prompt_meta"] = atk_prompt.get_metadata()
             saved_dict[i]["runs"] = []
             for gpts in gpts_path:
                 all_atk_info = []
@@ -358,6 +361,9 @@ class Raccoon:
         for i, atk_prompt in enumerate(self.atk_loader):
             print(f"Running attack {i}...atk_prompt: \n{atk_prompt.get_att_prompt()}")
             saved_dict[i]["attack_prompt"] = [atk_prompt.category, atk_prompt.get_att_prompt()]
+            saved_dict[i]["attack_prompt_name"] = getattr(atk_prompt, "name", None)
+            if hasattr(atk_prompt, "get_metadata"):
+                saved_dict[i]["attack_prompt_meta"] = atk_prompt.get_metadata()
             saved_dict[i]["runs"] = []
             for assistant_json in assistant_info:
                 name = assistant_json["name"]

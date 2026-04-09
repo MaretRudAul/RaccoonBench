@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 from string import Template
+from typing import Optional, Dict, Any
 
 
 class SysPrompt:
@@ -246,9 +247,17 @@ class AttPrompt:
     A class representing an attack prompt for a GPTs.
     """
 
-    def __init__(self, att_prompt: str, category) -> None:
+    def __init__(
+        self,
+        att_prompt: str,
+        category: str,
+        name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         self.att_prompt = att_prompt
         self.category = category
+        self.name = name
+        self.metadata = metadata or {}
 
     @staticmethod
     def load_all_attacks(att_loader) -> list:
@@ -268,11 +277,27 @@ class AttPrompt:
             for prompt_path in category_path.glob("*"):
                 with open(prompt_path, encoding="utf-8") as f:
                     att_prompt = f.read()
-                att_prompts.append(AttPrompt(att_prompt, category_name))
+                base_attack_name = prompt_path.stem
+                att_prompts.append(
+                    AttPrompt(
+                        att_prompt,
+                        category_name,
+                        name=base_attack_name,
+                        metadata={
+                            "base_attack_name": base_attack_name,
+                            "source_language": "en",
+                        },
+                    )
+                )
         return att_prompts
 
     def get_att_prompt(self) -> str:
         return self.att_prompt
 
+    def get_metadata(self) -> dict:
+        return self.metadata
+
     def __str__(self):
-        return f"Category: {self.category}\nPrompt: {self.att_prompt}"
+        name_part = f"\nName: {self.name}" if self.name else ""
+        meta_part = f"\nMetadata: {self.metadata}" if self.metadata else ""
+        return f"Category: {self.category}{name_part}{meta_part}\nPrompt: {self.att_prompt}"
