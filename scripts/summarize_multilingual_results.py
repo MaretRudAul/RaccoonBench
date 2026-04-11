@@ -43,7 +43,14 @@ def main() -> None:
             payload = json.load(f)
 
         meta = payload.get("attack_prompt_meta", {}) or {}
-        variant = meta.get("variant_label") or meta.get("language_pair") or meta.get("target_language") or "UNKNOWN"
+        variant = meta.get("variant_label") or meta.get("language_pair") or meta.get("target_language")
+        if not variant:
+            # English-only runs may only store minimal metadata. Treat them as EN for readability.
+            # This also keeps older/sparser result files analyzable without re-running.
+            if meta.get("source_language") == "en" or not meta:
+                variant = "EN"
+            else:
+                variant = "UNKNOWN"
 
         # derive defense name from filename suffix to match saved layout
         def_name = fp.name.split("_def_", 1)[1].rsplit(".json", 1)[0]

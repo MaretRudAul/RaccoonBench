@@ -18,7 +18,11 @@ from Raccoon.raccoon_gang import RaccoonGang
 from Raccoon.prompt import AttPrompt
 from Raccoon.utils import load_model
 from Raccoon.translation_utils import AttackTranslator
-from Raccoon.multilingual_attacks import expand_attack_prompts_multilingual
+from Raccoon.multilingual_attacks import (
+    expand_attack_prompts_multilingual,
+    parse_multilingual_variant_filter,
+)
+from Raccoon.attack_output_language import append_english_output_instruction
 
 from config import API_BASE, API_KEY
 
@@ -100,6 +104,13 @@ if __name__ == "__main__":
         help="Translation provider: auto|openai|openrouter. "
         "Defaults to auto (can also set RACCOON_TRANSLATION_PROVIDER).",
     )
+    parser.add_argument(
+        "--multilingual_variants",
+        type=str,
+        default="en,bn,zu,bn+zu",
+        help="When --enable_multilingual_attacks: comma-separated subset of "
+        "en, bn, zu, bn+zu. Example: bn (Bengali-only) to save cost. Default: all four.",
+    )
     args = parser.parse_args()
 
     GPTS_PATH = args.gpts_path
@@ -138,13 +149,26 @@ custom_defense_name: {custom_defense_name} multi_turn: {multi_turn}"
     atk_loader = AttLoader(ATT_PATH)
     atk_prompts = AttPrompt.load_all_attacks(atk_loader)
 
+    if not args.enable_multilingual_attacks:
+        for a in atk_prompts:
+            a.att_prompt = append_english_output_instruction(a.att_prompt, "EN")
+
     if args.enable_multilingual_attacks:
-        # Translation is LLM-based and cached. Default: OpenRouter (cheap hosted models).
-        translator = AttackTranslator.from_env(
-            provider=args.translation_provider,
-            model=args.translation_model,
+        try:
+            variant_wanted = parse_multilingual_variant_filter(args.multilingual_variants)
+        except ValueError as e:
+            raise SystemExit(str(e)) from e
+        need_translation = variant_wanted & {"BN", "ZU", "BN+ZU"}
+        translator = None
+        if need_translation:
+            translator = AttackTranslator.from_env(
+                provider=args.translation_provider,
+                model=args.translation_model,
+            )
+        atk_prompts = expand_attack_prompts_multilingual(
+            atk_prompts, translator, variant_filter=variant_wanted
         )
-        atk_prompts = expand_attack_prompts_multilingual(atk_prompts, translator, include_mixed_bn_zu=True)
+        print(f"Multilingual variants: {sorted(variant_wanted)}")
     gpts_loader = Loader(GPTS_PATH)
     ref_defenses = json.load(open(REF_DEF_PATH, encoding="utf-8"))
     def_templates = json.load(open(DEF_TEMPLATE_PATH, encoding="utf-8"))
