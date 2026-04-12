@@ -23,6 +23,12 @@ from Raccoon.multilingual_attacks import (
     parse_multilingual_variant_filter,
 )
 from Raccoon.attack_output_language import append_english_output_instruction
+from Raccoon.semantic_chunk_leakage import SemanticChunkLeakageConfig
+from Raccoon.semantic_embedding import (
+    CachedOpenAIEmbeddingProvider,
+    make_semantic_embedding_client,
+)
+from Raccoon.attack_to_english_defense import AttackToEnglishTranslator
 
 from config import API_BASE, API_KEY
 
@@ -111,6 +117,80 @@ if __name__ == "__main__":
         help="When --enable_multilingual_attacks: comma-separated subset of "
         "en, bn, zu, bn+zu. Example: bn (Bengali-only) to save cost. Default: all four.",
     )
+    parser.add_argument(
+        "--enable_semantic_chunk_leakage",
+        action="store_true",
+        default=False,
+        help="Secondary metric: embedding cosine vs chunked hidden English prompt. "
+        "Uses OPENAI_API_KEY or RACCOON_SEMANTIC_EMBEDDING_API_KEY.",
+    )
+    parser.add_argument(
+        "--semantic_similarity_threshold",
+        type=float,
+        default=None,
+        help="Semantic similarity threshold: v1 default 0.35, v2 default 0.50 (override via env).",
+    )
+    parser.add_argument(
+        "--semantic_fraction_threshold",
+        type=float,
+        default=None,
+        help="Fraction of chunks above similarity threshold for semantic flag (default: env or 0.25).",
+    )
+    parser.add_argument("--semantic_topk", type=int, default=None)
+    parser.add_argument(
+        "--semantic_chunking_mode",
+        type=str,
+        default=None,
+        help="auto|paragraph|sentence|sliding",
+    )
+    parser.add_argument("--semantic_embedding_model", type=str, default=None)
+    parser.add_argument("--semantic_max_chunk_chars", type=int, default=None)
+    parser.add_argument("--semantic_window_size", type=int, default=None)
+    parser.add_argument("--semantic_window_stride", type=int, default=None)
+    parser.add_argument("--semantic_cache_dir", type=str, default=None)
+    parser.add_argument(
+        "--semantic_metric_version",
+        type=str,
+        default=None,
+        choices=("v1", "v2"),
+        help="v2: pairwise chunks + negative prompts (default from env or v2). v1: legacy.",
+    )
+    parser.add_argument("--semantic_margin_threshold", type=float, default=None)
+    parser.add_argument("--negative_prompt_sample_count", type=int, default=None)
+    parser.add_argument("--fine_min_merge_chars", type=int, default=None)
+    parser.add_argument("--fine_max_merged_chars", type=int, default=None)
+    parser.add_argument("--diagnostic_similarity_threshold", type=float, default=None)
+    parser.add_argument(
+        "--translate_attack_to_english",
+        action="store_true",
+        default=False,
+        help="Defense: after building the final attack (including multilingual), translate it to English "
+        "via a separate API call, then send that text to the victim model.",
+    )
+    parser.add_argument(
+        "--run_all_three_benchmark_modes",
+        action="store_true",
+        default=False,
+        help="Run three benchmark conditions in one process: (1) defenseless user prompt + sys template, "
+        "(2) Raccoon defended (sys template + custom defense templates), (3) same as (1) with "
+        "--translate_attack_to_english. Writes JSON under subfolders undefended/, raccoon_defended/, "
+        "translate_attack_to_english/ inside the timestamped run directory.",
+    )
+    parser.add_argument(
+        "--attack_to_english_model",
+        type=str,
+        default=None,
+        help="Model id for attack-to-English defense (env: RACCOON_ATTACK_TO_ENGLISH_MODEL; "
+        "falls back to --translation_model / RACCOON_TRANSLATION_MODEL).",
+    )
+    parser.add_argument(
+        "--attack_to_english_provider",
+        type=str,
+        default=None,
+        choices=("auto", "openai", "openrouter"),
+        help="Provider for attack-to-English API (env: RACCOON_ATTACK_TO_ENGLISH_PROVIDER; "
+        "falls back to --translation_provider / RACCOON_TRANSLATION_PROVIDER).",
+    )
     args = parser.parse_args()
 
     GPTS_PATH = args.gpts_path
@@ -172,6 +252,9 @@ custom_defense_name: {custom_defense_name} multi_turn: {multi_turn}"
     gpts_loader = Loader(GPTS_PATH)
     ref_defenses = json.load(open(REF_DEF_PATH, encoding="utf-8"))
     def_templates = json.load(open(DEF_TEMPLATE_PATH, encoding="utf-8"))
+    custom_defenses_full = [
+        (name, def_templates[name]) for name in sorted(def_templates.keys())
+    ]
     custom_defenses = []
     if use_custom_defenses:
         custom_defenses = [(name, def_templates[name]) for name in custom_defense_name]
@@ -187,6 +270,82 @@ custom_defense_name: {custom_defense_name} multi_turn: {multi_turn}"
     else:
         client = load_model(model_used, organization=organization, provider=args.provider)
     print(f"using client: {client}")
+
+    semantic_config = SemanticChunkLeakageConfig.from_env()
+    if args.enable_semantic_chunk_leakage:
+        semantic_config.enabled = True
+    if args.semantic_similarity_threshold is not None:
+        semantic_config.semantic_similarity_threshold = args.semantic_similarity_threshold
+    if args.semantic_fraction_threshold is not None:
+        semantic_config.semantic_fraction_threshold = args.semantic_fraction_threshold
+    if args.semantic_topk is not None:
+        semantic_config.semantic_topk = args.semantic_topk
+    if args.semantic_chunking_mode is not None:
+        semantic_config.chunking_mode = args.semantic_chunking_mode
+    if args.semantic_embedding_model is not None:
+        semantic_config.embedding_model = args.semantic_embedding_model
+    if args.semantic_max_chunk_chars is not None:
+        semantic_config.max_chunk_chars = args.semantic_max_chunk_chars
+    if args.semantic_window_size is not None:
+        semantic_config.window_size = args.semantic_window_size
+    if args.semantic_window_stride is not None:
+        semantic_config.window_stride = args.semantic_window_stride
+    if args.semantic_cache_dir is not None:
+        semantic_config.cache_dir = args.semantic_cache_dir
+    if args.semantic_metric_version is not None:
+        semantic_config.metric_version = args.semantic_metric_version
+    if args.semantic_margin_threshold is not None:
+        semantic_config.semantic_margin_threshold = args.semantic_margin_threshold
+    if args.negative_prompt_sample_count is not None:
+        semantic_config.negative_prompt_sample_count = args.negative_prompt_sample_count
+    if args.fine_min_merge_chars is not None:
+        semantic_config.fine_min_merge_chars = args.fine_min_merge_chars
+    if args.fine_max_merged_chars is not None:
+        semantic_config.fine_max_merged_chars = args.fine_max_merged_chars
+    if args.diagnostic_similarity_threshold is not None:
+        semantic_config.diagnostic_similarity_threshold = (
+            args.diagnostic_similarity_threshold
+        )
+
+    semantic_embedder = None
+    if semantic_config.enabled:
+        emb_key = os.getenv("RACCOON_SEMANTIC_EMBEDDING_API_KEY") or os.getenv(
+            "OPENAI_API_KEY"
+        )
+        if not emb_key:
+            raise SystemExit(
+                "Semantic chunk leakage requires OPENAI_API_KEY or RACCOON_SEMANTIC_EMBEDDING_API_KEY."
+            )
+        emb_base = os.getenv("RACCOON_SEMANTIC_EMBEDDING_BASE_URL")
+        emb_client = make_semantic_embedding_client(
+            api_key=emb_key, base_url=emb_base
+        )
+        semantic_embedder = CachedOpenAIEmbeddingProvider(
+            emb_client,
+            model=semantic_config.embedding_model,
+            provider_id=semantic_config.embedding_provider_id,
+            cache_dir=semantic_config.cache_dir,
+        )
+        print(
+            f"Semantic leakage enabled: version={semantic_config.metric_version}, "
+            f"model={semantic_config.embedding_model}, cache={semantic_config.cache_dir}"
+        )
+
+    need_attack_to_english_translator = (
+        args.translate_attack_to_english or args.run_all_three_benchmark_modes
+    )
+    attack_to_english_translator = None
+    if need_attack_to_english_translator:
+        aprov = args.attack_to_english_provider or args.translation_provider
+        amodel = args.attack_to_english_model or args.translation_model
+        attack_to_english_translator = AttackToEnglishTranslator.from_env(
+            provider=aprov,
+            model=amodel,
+        )
+        print(
+            f"Attack-to-English defense translator: provider={aprov}, model={attack_to_english_translator.model}"
+        )
+
     raccoon = RaccoonGang(
         gpts_loader,
         atk_prompts,
@@ -200,28 +359,71 @@ custom_defense_name: {custom_defense_name} multi_turn: {multi_turn}"
         delay=delay,
         atk_budget=atk_budget,
         streaming=streaming,
+        semantic_config=semantic_config,
+        semantic_embedder=semantic_embedder,
+        attack_to_english_translator=attack_to_english_translator,
     )
     print(f"Results will be saved to: {raccoon.save_path}")
-    benchmark_result = raccoon.benchmark(
-        use_sys_template=use_sys_template,
-        use_defenseless_user_prompt=use_defenseless_user_prompt,
-        use_custom_defenses=use_custom_defenses,
-        custom_defenses=custom_defenses,
-        multi_turn=multi_turn,
-        max_workers=max_workers,
-    )
 
-    print(settings)
-    for i, results in benchmark_result.items():
-        print(f"\nAttack Prompt #{i}: {atk_prompts[i]}")
-        for def_name, result in results.items():
-            print(
-                f"Attack Prompt {i} Def Name {def_name} Success Rate: {sum(result.values())/len(result)}\n\n"
-            )
-            print("Details: ")
-            for name, r in result.items():
+    def print_benchmark_summary(benchmark_result, label: str = "") -> None:
+        prefix = f"[{label}] " if label else ""
+        print(settings)
+        for i, results in benchmark_result.items():
+            print(f"\n{prefix}Attack Prompt #{i}: {atk_prompts[i]}")
+            for def_name, result in results.items():
                 print(
-                    f"    [{name}] --- Attack Success"
-                    if r == 1
-                    else f"    [{name}] --- Attack Failed"
+                    f"{prefix}Attack Prompt {i} Def Name {def_name} Success Rate: "
+                    f"{sum(result.values())/len(result)}\n\n"
                 )
+                print("Details: ")
+                for name, r in result.items():
+                    print(
+                        f"    [{name}] --- Attack Success"
+                        if r == 1
+                        else f"    [{name}] --- Attack Failed"
+                    )
+
+    if args.run_all_three_benchmark_modes:
+        print(
+            "Running three benchmark modes; outputs: "
+            f"{raccoon.save_path}/undefended/, "
+            f"{raccoon.save_path}/raccoon_defended/, "
+            f"{raccoon.save_path}/translate_attack_to_english/"
+        )
+        modes_spec = [
+            ("undefended", "undefended", True, True, False, False),
+            ("raccoon_defended", "raccoon_defended", True, False, True, False),
+            (
+                "translate_attack_to_english",
+                "translate_to_english_defense",
+                True,
+                True,
+                False,
+                True,
+            ),
+        ]
+        for subdir, cond, ust, udl, ucu, utr in modes_spec:
+            raccoon.results_subdir = subdir
+            benchmark_result = raccoon.benchmark(
+                use_sys_template=ust,
+                use_defenseless_user_prompt=udl,
+                use_custom_defenses=ucu,
+                custom_defenses=custom_defenses_full if ucu else [],
+                multi_turn=multi_turn,
+                max_workers=max_workers,
+                translate_attack_to_english=utr,
+                benchmark_condition=cond,
+            )
+            print_benchmark_summary(benchmark_result, label=cond)
+        raccoon.results_subdir = None
+    else:
+        benchmark_result = raccoon.benchmark(
+            use_sys_template=use_sys_template,
+            use_defenseless_user_prompt=use_defenseless_user_prompt,
+            use_custom_defenses=use_custom_defenses,
+            custom_defenses=custom_defenses,
+            multi_turn=multi_turn,
+            max_workers=max_workers,
+            translate_attack_to_english=args.translate_attack_to_english,
+        )
+        print_benchmark_summary(benchmark_result)

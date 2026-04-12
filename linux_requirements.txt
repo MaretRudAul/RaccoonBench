@@ -25,6 +25,9 @@ rouge-score>=0.1.2
 tiktoken>=0.5.2
 nltk>=3.8.1
 
+# Secondary semantic chunk leakage (embedding cosine)
+numpy>=1.24.0
+
 # Optional convenience for loading `.env` automatically in custom scripts
 python-dotenv>=1.0.0
 

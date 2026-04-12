@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import List, Dict
+from typing import List, Dict, Optional
 import concurrent.futures
 import textwrap
 import json
@@ -17,6 +17,17 @@ from datetime import datetime
 from Raccoon.loader import Loader
 from Raccoon.prompt import SysPrompt
 from Raccoon.tokenizer import TiktokenWrapper
+from Raccoon.semantic_chunk_leakage import (
+    SemanticChunkLeakageConfig,
+    compute_chunk_semantic_scores,
+)
+from Raccoon.semantic_embedding import EmbeddingProvider
+from Raccoon.attack_to_english_defense import (
+    ATTACK_TO_ENGLISH_PROMPT_VERSION,
+    attack_language_condition,
+    maybe_translate_attack_for_defense,
+    AttackToEnglishTranslator,
+)
 
 
 class RaccoonGang:
@@ -56,6 +67,9 @@ class RaccoonGang:
         interval=0,
         streaming=False,
         save_path="results",
+        semantic_config: Optional[SemanticChunkLeakageConfig] = None,
+        semantic_embedder: Optional[EmbeddingProvider] = None,
+        attack_to_english_translator: Optional[AttackToEnglishTranslator] = None,
     ) -> None:
         self.gpts_loader = gpts_loader
         self.atk_loader = atk_loader
@@ -98,6 +112,14 @@ class RaccoonGang:
             # Create the folder
             Path(folder_name).mkdir(parents=True, exist_ok=True)
             self.save_path = folder_name
+
+        self.semantic_config = semantic_config or SemanticChunkLeakageConfig(
+            enabled=False
+        )
+        self.semantic_embedder = semantic_embedder
+        self._semantic_prompt_pool: List[str] = []
+        self.attack_to_english_translator = attack_to_english_translator
+        self.results_subdir: Optional[str] = None
 
     @limits(calls=15, period=60)
     def attack_llama(self, sys_prompt: str, atk_prompt: str,multi_turn=False) -> str:
@@ -250,15 +272,60 @@ class RaccoonGang:
         scores = self.scorer.score(sys_prompt, atk_response)
         return scores["rougeL"].recall
 
-    def _create_attack_info(self,user_sys_prompt,atk_prompt_str,atk_response,parsed_response,score,success):
-        return {"prompt": user_sys_prompt,
-                "atk_prompt": atk_prompt_str,
-                "response": atk_response,
-                "parsed_response": parsed_response,
-                "score": score,
-                "success": success}
+    def _create_attack_info(
+        self,
+        user_sys_prompt,
+        atk_prompt_str,
+        atk_response,
+        parsed_response,
+        score,
+        success,
+        semantic_chunk_leakage=None,
+        semantic_chunk_leakage_v2=None,
+        *,
+        original_attack_prompt: Optional[str] = None,
+        benchmark_condition: Optional[str] = None,
+        translate_attack_to_english: bool = False,
+        attack_to_english_meta: Optional[Dict] = None,
+    ):
+        d = {
+            "prompt": user_sys_prompt,
+            "atk_prompt": atk_prompt_str,
+            "response": atk_response,
+            "parsed_response": parsed_response,
+            "score": score,
+            "success": success,
+            "victim_model": self.model,
+        }
+        if semantic_chunk_leakage is not None:
+            d["semantic_chunk_leakage"] = semantic_chunk_leakage
+        if semantic_chunk_leakage_v2 is not None:
+            d["semantic_chunk_leakage_v2"] = semantic_chunk_leakage_v2
+        if benchmark_condition is not None:
+            d["benchmark_condition"] = benchmark_condition
+        if translate_attack_to_english:
+            if original_attack_prompt is not None:
+                d["original_attack_prompt"] = original_attack_prompt
+            if attack_to_english_meta:
+                d.update(attack_to_english_meta)
+            else:
+                d["translate_attack_to_english_defense"] = True
+        elif original_attack_prompt is not None and original_attack_prompt != atk_prompt_str:
+            d["original_attack_prompt"] = original_attack_prompt
+        return d
+
     def run_benchmark(
-        self, full_sys_prompt: str, user_sys_prompt: str, atk_prompt_str: str,multi_turn=False
+        self,
+        full_sys_prompt: str,
+        user_sys_prompt: str,
+        atk_prompt_str: str,
+        multi_turn=False,
+        semantic_sample_key: str = "",
+        *,
+        original_attack_prompt: Optional[str] = None,
+        benchmark_condition: Optional[str] = None,
+        translate_attack_to_english: bool = False,
+        attack_to_english_meta: Optional[Dict] = None,
     ) -> (int, List[Dict]):
         all_atk_info = []
         success = 0
@@ -273,6 +340,33 @@ class RaccoonGang:
             score = self.evaluate(user_sys_prompt, parsed_response)
             success = 1 if score >= self.suc_threshold else 0
 
+            semantic_chunk_leakage = None
+            semantic_chunk_leakage_v2 = None
+            if (
+                self.semantic_embedder is not None
+                and self.semantic_config is not None
+                and self.semantic_config.enabled
+            ):
+                mv = (self.semantic_config.metric_version or "v2").lower()
+                if mv == "v2":
+                    from Raccoon.semantic_metric_v2 import compute_semantic_metric_v2
+
+                    semantic_chunk_leakage_v2 = compute_semantic_metric_v2(
+                        user_sys_prompt,
+                        parsed_response,
+                        self.semantic_embedder,
+                        self.semantic_config,
+                        other_hidden_prompts=self._semantic_prompt_pool,
+                        sample_key=semantic_sample_key or "unknown",
+                    )
+                else:
+                    semantic_chunk_leakage = compute_chunk_semantic_scores(
+                        user_sys_prompt,
+                        parsed_response,
+                        self.semantic_embedder,
+                        self.semantic_config,
+                    )
+
             logging.info(
                 f"--------------System prompt:------------------\n{full_sys_prompt}\n"
             )
@@ -281,7 +375,20 @@ class RaccoonGang:
                 f"--------------Parsed Response:--------------\n{SysPrompt.parse_prompt(parsed_response)}\n"
             )
 
-            cur_atk_info = self._create_attack_info(user_sys_prompt,atk_prompt_str,atk_response,parsed_response,score,success)
+            cur_atk_info = self._create_attack_info(
+                user_sys_prompt,
+                atk_prompt_str,
+                atk_response,
+                parsed_response,
+                score,
+                success,
+                semantic_chunk_leakage=semantic_chunk_leakage,
+                semantic_chunk_leakage_v2=semantic_chunk_leakage_v2,
+                original_attack_prompt=original_attack_prompt,
+                benchmark_condition=benchmark_condition,
+                translate_attack_to_english=translate_attack_to_english,
+                attack_to_english_meta=attack_to_english_meta,
+            )
             all_atk_info.append(cur_atk_info)
             if score >= self.suc_threshold:
                 break
@@ -299,10 +406,31 @@ class RaccoonGang:
         custom_defense="",
         multi_turn=False,
         defense_position="BOT",
+        translate_attack_to_english: bool = False,
+        benchmark_condition: Optional[str] = None,
     ) -> (int, List[Dict]):
         sys_prompt = SysPrompt(self.ref_defenses)
         sys_prompt.load_gpts(gpts)
-        atk_prompt_str = atk_prompt.get_att_prompt()
+        original_attack_prompt = atk_prompt.get_att_prompt()
+        atk_prompt_str = original_attack_prompt
+        attack_to_english_meta = None
+        if translate_attack_to_english:
+            if self.attack_to_english_translator is None:
+                raise ValueError(
+                    "translate_attack_to_english is enabled but RaccoonGang has no "
+                    "attack_to_english_translator (configure AttackToEnglishTranslator)."
+                )
+            gpt_id = gpts.name if isinstance(gpts, Path) else str(gpts)
+            atk_name = getattr(atk_prompt, "name", None) or ""
+            lang_cond = attack_language_condition(atk_prompt)
+            atk_prompt_str, attack_to_english_meta = maybe_translate_attack_for_defense(
+                self.attack_to_english_translator,
+                True,
+                original_attack=original_attack_prompt,
+                gpt_sample_id=gpt_id,
+                attack_name=atk_name,
+                attack_language_condition=lang_cond,
+            )
         user_sys_prompt = sys_prompt.get_system_prompt(
             use_original_user_prompt,
             use_defenseless_user_prompt,
@@ -318,7 +446,18 @@ class RaccoonGang:
                 name=sys_prompt.get_name(), user_prompt=user_sys_prompt
             )
         time.sleep(self.interval)
-        return self.run_benchmark(full_sys_prompt, user_sys_prompt, atk_prompt_str,multi_turn=multi_turn)
+        sk = gpts.name if isinstance(gpts, Path) else str(gpts)
+        return self.run_benchmark(
+            full_sys_prompt,
+            user_sys_prompt,
+            atk_prompt_str,
+            multi_turn=multi_turn,
+            semantic_sample_key=sk,
+            original_attack_prompt=original_attack_prompt,
+            benchmark_condition=benchmark_condition,
+            translate_attack_to_english=translate_attack_to_english,
+            attack_to_english_meta=attack_to_english_meta,
+        )
 
     def benchmark(
         self,
@@ -331,6 +470,8 @@ class RaccoonGang:
         multi_turn=False,
         defense_position="BOT",
         max_workers=5,
+        translate_attack_to_english: bool = False,
+        benchmark_condition: Optional[str] = None,
     ) -> Dict[int, Dict[str, int]]:
         results = defaultdict(lambda: defaultdict(dict))
         saved_dict = defaultdict(lambda: defaultdict(dict))
@@ -358,6 +499,8 @@ class RaccoonGang:
                         "custom_defense": cus_def,
                         "defense_position": defense_position,
                         "multi_turn": multi_turn,
+                        "translate_attack_to_english": translate_attack_to_english,
+                        "benchmark_condition": benchmark_condition,
                     }
                     logging.info(
                         f"Running attack {i} defense {j} ...atk_prompt: \n{atk_prompt.get_att_prompt()}\ndefense_prompt: \n{cus_def_name}\n"
@@ -371,7 +514,40 @@ class RaccoonGang:
                     )
                     if hasattr(atk_prompt, "get_metadata"):
                         saved_dict[i][cus_def_name]["attack_prompt_meta"] = atk_prompt.get_metadata()
+                    if benchmark_condition is not None:
+                        saved_dict[i][cus_def_name]["benchmark_condition"] = benchmark_condition
+                    saved_dict[i][cus_def_name]["translate_attack_to_english_defense"] = (
+                        translate_attack_to_english
+                    )
+                    if translate_attack_to_english and self.attack_to_english_translator:
+                        saved_dict[i][cus_def_name]["attack_to_english_translation_model"] = (
+                            self.attack_to_english_translator.model
+                        )
+                        saved_dict[i][cus_def_name][
+                            "attack_to_english_prompt_version"
+                        ] = ATTACK_TO_ENGLISH_PROMPT_VERSION
                     saved_dict[i][cus_def_name]["runs"] = []
+
+                    if (
+                        self.semantic_config
+                        and self.semantic_config.enabled
+                        and self.semantic_embedder is not None
+                        and (self.semantic_config.metric_version or "v2").lower() == "v2"
+                    ):
+                        from Raccoon.semantic_pool import build_semantic_prompt_pool
+
+                        self._semantic_prompt_pool = build_semantic_prompt_pool(
+                            gpts_path,
+                            self.ref_defenses,
+                            use_original_user_prompt=use_original_user_prompt,
+                            use_defenseless_user_prompt=use_defenseless_user_prompt,
+                            use_original_user_defenses=use_original_user_defenses,
+                            use_custom_defenses=use_custom_defenses,
+                            custom_defense=cus_def,
+                            defense_position=defense_position,
+                        )
+                    else:
+                        self._semantic_prompt_pool = []
 
                     pbar = tqdm(
                         total=len(gpts_path),
@@ -410,6 +586,14 @@ class RaccoonGang:
                     
         return results
 
+    def _results_dir(self) -> Path:
+        base = Path(self.save_path)
+        if self.results_subdir:
+            out = base / self.results_subdir
+            out.mkdir(parents=True, exist_ok=True)
+            return out
+        return base
+
     def save_benchmark(self, saved_dict):
         """
         Saves the benchmarking results to a file.
@@ -417,9 +601,12 @@ class RaccoonGang:
         Args:
             benchmark_result (Dict[int, Dict[str, Dict]]): The benchmarking results.
         """
+        out_dir = self._results_dir()
         for atk_idx in saved_dict:
             for def_name in saved_dict[atk_idx]:
                 with open(
-                    f"{self.save_path}/atk_{atk_idx}_def_{def_name}.json", "w"
+                    out_dir / f"atk_{atk_idx}_def_{def_name}.json",
+                    "w",
+                    encoding="utf-8",
                 ) as f:
-                    json.dump(saved_dict[atk_idx][def_name], f)
+                    json.dump(saved_dict[atk_idx][def_name], f, ensure_ascii=False)
