@@ -168,13 +168,21 @@ if __name__ == "__main__":
         "via a separate API call, then send that text to the victim model.",
     )
     parser.add_argument(
+        "--append_system_security_suffix",
+        action="store_true",
+        default=False,
+        help="Append a fixed security/policy block to the end of the full system prompt sent to the victim "
+        "(after the GPT template). Does not change the hidden user prompt used for ROUGE scoring unless you "
+        "also change evaluation code. Default text: DEFAULT_SYSTEM_SECURITY_SUFFIX in Raccoon/raccoon_gang.py.",
+    )
+    parser.add_argument(
         "--run_all_three_benchmark_modes",
         action="store_true",
         default=False,
-        help="Run three benchmark conditions in one process: (1) defenseless user prompt + sys template, "
-        "(2) Raccoon defended (sys template + custom defense templates), (3) same as (1) with "
-        "--translate_attack_to_english. Writes JSON under subfolders undefended/, raccoon_defended/, "
-        "translate_attack_to_english/ inside the timestamped run directory.",
+        help="Run three benchmark conditions in one process: (1) undefended (sys template + defenseless user "
+        "prompt), (2) translate attack to English before victim inference, (3) undefended plus "
+        "--append_system_security_suffix. Writes JSON under undefended/, translate_attack_to_english/, "
+        "undefended_system_security_suffix/ inside the timestamped run directory.",
     )
     parser.add_argument(
         "--attack_to_english_model",
@@ -387,12 +395,11 @@ custom_defense_name: {custom_defense_name} multi_turn: {multi_turn}"
         print(
             "Running three benchmark modes; outputs: "
             f"{raccoon.save_path}/undefended/, "
-            f"{raccoon.save_path}/raccoon_defended/, "
-            f"{raccoon.save_path}/translate_attack_to_english/"
+            f"{raccoon.save_path}/translate_attack_to_english/, "
+            f"{raccoon.save_path}/undefended_system_security_suffix/"
         )
         modes_spec = [
-            ("undefended", "undefended", True, True, False, False),
-            ("raccoon_defended", "raccoon_defended", True, False, True, False),
+            ("undefended", "undefended", True, True, False, False, False),
             (
                 "translate_attack_to_english",
                 "translate_to_english_defense",
@@ -400,9 +407,19 @@ custom_defense_name: {custom_defense_name} multi_turn: {multi_turn}"
                 True,
                 False,
                 True,
+                False,
+            ),
+            (
+                "undefended_system_security_suffix",
+                "undefended_system_security_suffix",
+                True,
+                True,
+                False,
+                False,
+                True,
             ),
         ]
-        for subdir, cond, ust, udl, ucu, utr in modes_spec:
+        for subdir, cond, ust, udl, ucu, utr, use_sec in modes_spec:
             raccoon.results_subdir = subdir
             benchmark_result = raccoon.benchmark(
                 use_sys_template=ust,
@@ -413,6 +430,7 @@ custom_defense_name: {custom_defense_name} multi_turn: {multi_turn}"
                 max_workers=max_workers,
                 translate_attack_to_english=utr,
                 benchmark_condition=cond,
+                append_system_security_suffix=use_sec,
             )
             print_benchmark_summary(benchmark_result, label=cond)
         raccoon.results_subdir = None
@@ -425,5 +443,6 @@ custom_defense_name: {custom_defense_name} multi_turn: {multi_turn}"
             multi_turn=multi_turn,
             max_workers=max_workers,
             translate_attack_to_english=args.translate_attack_to_english,
+            append_system_security_suffix=args.append_system_security_suffix,
         )
         print_benchmark_summary(benchmark_result)

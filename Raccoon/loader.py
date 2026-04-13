@@ -8,22 +8,17 @@ class Loader:
     Args:
         gpts_dir (str): The directory path where the GPTs are located.
 
-    Attributes:
-        gpts (generator): A generator that yields the paths of the GPT files in the specified directory.
-        gpts_iter (iterator): An iterator used to iterate over the GPT paths.
-
+    Each ``for ... in loader`` or ``list(loader)`` starts a **new** directory listing.
+    This matters when ``RaccoonGang.benchmark()`` is invoked multiple times (e.g.
+    ``--run_all_three_benchmark_modes``): a single-shot iterator would be exhausted
+    after the first pass and later modes would run over zero GPTs (empty ``runs``).
     """
 
     def __init__(self, gpts_dir: str) -> None:
-        self.gpts = Path(gpts_dir).glob("*")
-        self.gpts_iter = iter(self.gpts)
+        self.gpts_dir = Path(gpts_dir)
 
     def __iter__(self):
-        return self
-
-    def __next__(self):
-        cur_gpts = next(self.gpts_iter)
-        return cur_gpts
+        return iter(self.gpts_dir.glob("*"))
 
 class AttLoader:
     def __init__(self, att_dir: str) -> None:

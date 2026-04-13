@@ -5,6 +5,46 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 
+def _collect_atk_json_files(
+    results_dir: Path,
+) -> Tuple[List[Path], Dict[Path, str]]:
+    """
+    Discover result JSON files.
+
+    - If ``results_dir`` contains ``atk_*_def_*.json`` directly (legacy / flat layout),
+      return those with an empty mode label per file.
+    - Otherwise, scan **immediate child subdirectories** only; for each subdir that
+      contains matching JSON, attach that folder name as the run mode (e.g. three-mode
+      benchmark: undefended/, translate_attack_to_english/, undefended_system_security_suffix/).
+    """
+    direct = sorted(results_dir.glob("atk_*_def_*.json"))
+    if direct:
+        return direct, {p: "" for p in direct}
+
+    out_files: List[Path] = []
+    path_to_mode: Dict[Path, str] = {}
+    for sub in sorted(results_dir.iterdir()):
+        if not sub.is_dir():
+            continue
+        found = sorted(sub.glob("atk_*_def_*.json"))
+        if not found:
+            continue
+        for p in found:
+            out_files.append(p)
+            path_to_mode[p] = sub.name
+    return out_files, path_to_mode
+
+
+def _mode_from_payload_or_path(
+    payload: Dict[str, Any], fp: Path, fallback_dir_mode: str
+) -> str:
+    """Prefer JSON benchmark_condition; else subdirectory name used during discovery."""
+    bc = payload.get("benchmark_condition")
+    if isinstance(bc, str) and bc.strip():
+        return bc.strip()
+    return fallback_dir_mode
+
+
 def _variant_from_payload(payload: Dict[str, Any]) -> str:
     meta = payload.get("attack_prompt_meta", {}) or {}
     variant = meta.get("variant_label") or meta.get("language_pair") or meta.get(
@@ -72,6 +112,31 @@ def _semantic_from_runs(payload: Dict[str, Any]) -> Tuple[float, float, int]:
     )
 
 
+def _detect_semantic_metric_version(files: List[Path]) -> str:
+    """
+    Inspect result JSONs until we find semantic metrics.
+
+    We cannot use only ``files[0]``: multi-mode runs may sort e.g. ``translate_attack_to_english/``
+    first, and those files may have empty ``runs`` (incomplete/crashed jobs)
+    while ``undefended/`` still holds full v2 payloads.
+    Returns 'v2', 'v1', or ''.
+    """
+    saw_v1 = False
+    for fp in files:
+        try:
+            with open(fp, encoding="utf-8") as f:
+                payload = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        for r in payload.get("runs", []):
+            for att in r.get("atk_info", []):
+                if isinstance(att.get("semantic_chunk_leakage_v2"), dict):
+                    return "v2"
+                if isinstance(att.get("semantic_chunk_leakage"), dict):
+                    saw_v1 = True
+    return "v1" if saw_v1 else ""
+
+
 def _semantic_v2_from_runs(
     payload: Dict[str, Any],
 ) -> Tuple[float, float, float, int]:
@@ -121,7 +186,9 @@ def main() -> None:
         "--results_dir",
         type=str,
         required=True,
-        help="Path like results/run_YYYYMMDD_HHMMSS",
+        help="Path like results/run_YYYYMMDD_HHMMSS (flat JSON) or a run directory whose "
+        "JSON files live in immediate subfolders (e.g. undefended/, translate_attack_to_english/, "
+        "undefended_system_security_suffix/).",
     )
     ap.add_argument(
         "--semantic",
@@ -130,70 +197,105 @@ def main() -> None:
     )
     args = ap.parse_args()
 
-    results_dir = Path(args.results_dir)
-    files = sorted(results_dir.glob("atk_*_def_*.json"))
-    if not files:
-        raise SystemExit(f"No result files found in {results_dir}")
+    results_dir = Path(args.results_dir).resolve()
+    if not results_dir.is_dir():
+        raise SystemExit(f"Not a directory: {results_dir}")
 
-    by_def_and_variant: Dict[Tuple[str, str], list] = defaultdict(list)
-    by_def_and_variant_sem: Dict[Tuple[str, str], list] = defaultdict(list)
-    by_def_and_variant_mx: Dict[Tuple[str, str], list] = defaultdict(list)
-    by_def_and_variant_nsem: Dict[Tuple[str, str], list] = defaultdict(list)
-    by_def_and_variant_mrg: Dict[Tuple[str, str], list] = defaultdict(list)
-    use_v2 = False
+    files, path_to_mode = _collect_atk_json_files(results_dir)
+    if not files:
+        raise SystemExit(
+            f"No result files found in {results_dir} (expected atk_*_def_*.json here "
+            f"or in immediate subdirectories)."
+        )
+
+    use_subdir_modes = any(path_to_mode.get(p, "") for p in files)
+
+    AggregateKey = Tuple[str, str, str]
+    by_key: Dict[AggregateKey, list] = defaultdict(list)
+    by_key_sem: Dict[AggregateKey, list] = defaultdict(list)
+    by_key_mx: Dict[AggregateKey, list] = defaultdict(list)
+    by_key_nsem: Dict[AggregateKey, list] = defaultdict(list)
+    by_key_mrg: Dict[AggregateKey, list] = defaultdict(list)
+    by_key_any_runs: Dict[AggregateKey, bool] = defaultdict(bool)
+    sem_metric_version = ""
     if args.semantic and files:
-        with open(files[0], encoding="utf-8") as f:
-            sample = json.load(f)
-        for r in sample.get("runs", [])[:3]:
-            for att in r.get("atk_info", []):
-                if isinstance(att.get("semantic_chunk_leakage_v2"), dict):
-                    use_v2 = True
-                    break
-            if use_v2:
-                break
+        sem_metric_version = _detect_semantic_metric_version(files)
+    use_v2 = sem_metric_version == "v2"
 
     for fp in files:
         with open(fp, "r", encoding="utf-8") as f:
             payload = json.load(f)
 
+        dir_mode = path_to_mode.get(fp, "")
+        mode = (
+            _mode_from_payload_or_path(payload, fp, dir_mode)
+            if use_subdir_modes
+            else ""
+        )
         variant = _variant_from_payload(payload)
         def_name = fp.name.split("_def_", 1)[1].rsplit(".json", 1)[0]
         rate = _attack_success_from_runs(payload)
-        by_def_and_variant[(def_name, variant)].append(rate)
+        key: AggregateKey = (mode, def_name, variant)
+        by_key[key].append(rate)
+        if payload.get("runs"):
+            by_key_any_runs[key] = True
 
         if args.semantic:
             if use_v2:
                 sr, mx, mrg, nsem = _semantic_v2_from_runs(payload)
-                by_def_and_variant_sem[(def_name, variant)].append(sr)
-                by_def_and_variant_mx[(def_name, variant)].append(mx)
-                by_def_and_variant_mrg[(def_name, variant)].append(mrg)
-                by_def_and_variant_nsem[(def_name, variant)].append(nsem)
+                by_key_sem[key].append(sr)
+                by_key_mx[key].append(mx)
+                by_key_mrg[key].append(mrg)
+                by_key_nsem[key].append(nsem)
             else:
                 sr, mx, nsem = _semantic_from_runs(payload)
-                by_def_and_variant_sem[(def_name, variant)].append(sr)
-                by_def_and_variant_mx[(def_name, variant)].append(mx)
-                by_def_and_variant_nsem[(def_name, variant)].append(nsem)
+                by_key_sem[key].append(sr)
+                by_key_mx[key].append(mx)
+                by_key_nsem[key].append(nsem)
 
     print("Average success rate (mean over attacks) by defense and variant:")
     print("(Primary metric: strict ROUGE-L ASR, threshold unchanged in pipeline)")
-    for (def_name, variant), rates in sorted(by_def_and_variant.items()):
+    if use_subdir_modes:
+        print(
+            f"(Multiple run modes from subdirectories of {results_dir}; "
+            "mode= from JSON benchmark_condition when present, else folder name.)"
+        )
+    for (mode, def_name, variant), rates in sorted(by_key.items()):
         mean_rate = sum(rates) / max(1, len(rates))
-        line = f"- defense={def_name:20s} variant={variant:6s} mean_strict_asr={mean_rate:.3f} (n_attacks={len(rates)})"
+        if use_subdir_modes:
+            line = (
+                f"- mode={mode:32s} defense={def_name:20s} variant={variant:6s} "
+                f"mean_strict_asr={mean_rate:.3f} (n_attacks={len(rates)})"
+            )
+        else:
+            line = f"- defense={def_name:20s} variant={variant:6s} mean_strict_asr={mean_rate:.3f} (n_attacks={len(rates)})"
         if args.semantic:
-            sem_rates = by_def_and_variant_sem.get((def_name, variant), [])
-            mx_rates = by_def_and_variant_mx.get((def_name, variant), [])
-            nsem = by_def_and_variant_nsem.get((def_name, variant), [0])
+            sem_rates = by_key_sem.get((mode, def_name, variant), [])
+            mx_rates = by_key_mx.get((mode, def_name, variant), [])
+            nsem = by_key_nsem.get((mode, def_name, variant), [0])
             if sem_rates and max(nsem) > 0:
                 ms = sum(sem_rates) / len(sem_rates)
                 mm = sum(mx_rates) / len(mx_rates)
                 if use_v2:
-                    mrs = by_def_and_variant_mrg.get((def_name, variant), [])
+                    mrs = by_key_mrg.get((mode, def_name, variant), [])
                     mrg = sum(mrs) / len(mrs) if mrs else 0.0
                     line += f" | v2 candidate_rate={ms:.3f} mean_true_score={mm:.3f} mean_margin={mrg:.3f}"
                 else:
                     line += f" | mean_semantic_leak_rate={ms:.3f} mean_max_chunk_sim={mm:.3f}"
             else:
-                line += " | (no semantic fields; backfill_semantic_metrics_v2.py or v1 backfill)"
+                if not by_key_any_runs.get((mode, def_name, variant), False):
+                    line += (
+                        " | (no semantic summary: saved JSON has empty "
+                        "\"runs\" — benchmark did not record GPTs for this row; "
+                        "re-run that mode or check logs, not a backfill issue)"
+                    )
+                elif not sem_metric_version:
+                    line += " | (no semantic_* fields found in any result file)"
+                else:
+                    line += (
+                        " | (runs present but no semantic_chunk_leakage(_v2) in atk_info; "
+                        "try scripts/backfill_semantic_metrics_v2.py or v1 backfill)"
+                    )
         print(line)
 
 
