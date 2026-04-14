@@ -94,7 +94,7 @@ python run_raccoon_gang.py \
 Optional environment variables:
 
 - `RACCOON_TRANSLATION_MODEL`: translation model id. Default: `gpt-5.4-nano`
-- `RACCOON_TRANSLATION_PROVIDER`: `auto|openai|openrouter` (default: `auto`). In `auto`, model ids with `/` or `:` use OpenRouter, otherwise OpenAI.
+- `RACCOON_TRANSLATION_PROVIDER`: `openai|openrouter|auto` (default when unset: OpenAI). `auto` is treated like `openai`; translation is independent of the victim model’s `--provider`. Use `openrouter` only when calling OpenRouter for translations.
 - `RACCOON_TRANSLATION_CACHE_PATH`: translation cache JSON path. Default: `.cache/raccoon_translation_cache.json`
 - `OPENROUTER_LLAMA31_8B_MODEL`: override `llama3.1_8b_openrouter` model id
 - `OPENROUTER_MIXTRAL_8X7B_MODEL`: override `mixtral_8x7b_openrouter` model id

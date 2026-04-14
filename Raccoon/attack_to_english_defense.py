@@ -146,7 +146,7 @@ class AttackToEnglishTranslator:
 
     @staticmethod
     def from_env(
-        provider: str = "auto",
+        provider: str = "openai",
         model: Optional[str] = None,
         cache_path: Optional[Path] = None,
         temperature: float = 0.0,
@@ -155,13 +155,13 @@ class AttackToEnglishTranslator:
             os.getenv("RACCOON_ATTACK_TO_ENGLISH_PROVIDER")
             or os.getenv("RACCOON_TRANSLATION_PROVIDER")
             or provider
-            or "auto"
+            or "openai"
         ).lower()
         model_eff = model or os.getenv("RACCOON_ATTACK_TO_ENGLISH_MODEL") or os.getenv(
             "RACCOON_TRANSLATION_MODEL", "gpt-5.4-nano"
         )
 
-        if prov == "openai":
+        if prov in ("openai", "auto"):
             return AttackToEnglishTranslator.from_openai_env(
                 model=model_eff, cache_path=cache_path, temperature=temperature
             )
@@ -169,16 +169,7 @@ class AttackToEnglishTranslator:
             return AttackToEnglishTranslator.from_openrouter_env(
                 model=model_eff, cache_path=cache_path, temperature=temperature
             )
-        if prov != "auto":
-            raise ValueError("attack-to-English provider must be one of: auto|openai|openrouter")
-
-        if "/" in model_eff or ":" in model_eff:
-            return AttackToEnglishTranslator.from_openrouter_env(
-                model=model_eff, cache_path=cache_path, temperature=temperature
-            )
-        return AttackToEnglishTranslator.from_openai_env(
-            model=model_eff, cache_path=cache_path, temperature=temperature
-        )
+        raise ValueError("attack-to-English provider must be one of: auto|openai|openrouter")
 
     def _full_payload(
         self,

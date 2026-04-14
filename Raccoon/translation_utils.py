@@ -230,7 +230,7 @@ class AttackTranslator:
 
     @staticmethod
     def from_env(
-        provider: str = "auto",
+        provider: str = "openai",
         model: Optional[str] = None,
         cache_path: Optional[Path] = None,
         temperature: float = 0.0,
@@ -239,18 +239,17 @@ class AttackTranslator:
         Create a translator based on environment and/or the model id.
 
         Defaults:
-        - provider: auto (can be overridden via RACCOON_TRANSLATION_PROVIDER)
-        - model: gpt-5.4-nano (can be overridden via RACCOON_TRANSLATION_MODEL)
+        - provider: openai (via RACCOON_TRANSLATION_PROVIDER or the ``provider`` argument)
+        - model: gpt-5.4-nano (via RACCOON_TRANSLATION_MODEL or the ``model`` argument)
 
-        Heuristics:
-        - If provider is openai/openrouter, use that explicitly.
-        - If provider is auto, pick OpenRouter when model looks like an OpenRouter slug
-          (contains "/" or ":"), otherwise OpenAI.
+        ``auto`` is treated like ``openai``: multilingual translation stays on the OpenAI API
+        unless you explicitly set provider to ``openrouter``. This is independent of which
+        model/provider you use for the victim benchmark.
         """
-        provider_eff = (os.getenv("RACCOON_TRANSLATION_PROVIDER", provider) or "auto").lower()
+        provider_eff = (os.getenv("RACCOON_TRANSLATION_PROVIDER", provider) or "openai").lower()
         model_eff = model or os.getenv("RACCOON_TRANSLATION_MODEL", "gpt-5.4-nano")
 
-        if provider_eff == "openai":
+        if provider_eff in ("openai", "auto"):
             return AttackTranslator.from_openai_env(
                 model=model_eff, cache_path=cache_path, temperature=temperature
             )
@@ -258,17 +257,7 @@ class AttackTranslator:
             return AttackTranslator.from_openrouter_env(
                 model=model_eff, cache_path=cache_path, temperature=temperature
             )
-        if provider_eff != "auto":
-            raise ValueError("translation provider must be one of: auto|openai|openrouter")
-
-        # auto
-        if "/" in model_eff or ":" in model_eff:
-            return AttackTranslator.from_openrouter_env(
-                model=model_eff, cache_path=cache_path, temperature=temperature
-            )
-        return AttackTranslator.from_openai_env(
-            model=model_eff, cache_path=cache_path, temperature=temperature
-        )
+        raise ValueError("translation provider must be one of: auto|openai|openrouter")
 
     def _cache_key(self, payload: Dict[str, Any]) -> str:
         stable = json.dumps(payload, sort_keys=True, ensure_ascii=False)

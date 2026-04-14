@@ -106,9 +106,11 @@ if __name__ == "__main__":
     parser.add_argument(
         "--translation_provider",
         type=str,
-        default="auto",
-        help="Translation provider: auto|openai|openrouter. "
-        "Defaults to auto (can also set RACCOON_TRANSLATION_PROVIDER).",
+        default="openai",
+        help="Translation provider for multilingual / attack-to-English: openai|openrouter|auto. "
+        "Default openai (gpt-5.4-nano unless RACCOON_TRANSLATION_MODEL / --translation_model). "
+        "auto is the same as openai; use openrouter only when you intend OpenRouter. "
+        "Independent of --provider for the victim model.",
     )
     parser.add_argument(
         "--multilingual_variants",
