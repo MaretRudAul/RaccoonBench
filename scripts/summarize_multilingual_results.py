@@ -136,6 +136,73 @@ def _semantic_v2_from_runs(
     )
 
 
+def _victim_model_from_payload(payload: Dict[str, Any]) -> str:
+    """First non-empty victim_model string from atk_info (OpenAI / OpenRouter id)."""
+    for r in payload.get("runs", []):
+        for att in r.get("atk_info", []):
+            vm = att.get("victim_model")
+            if isinstance(vm, str) and vm.strip():
+                return vm.strip()
+    return ""
+
+
+def _write_excel_summary(
+    rows: List[Dict[str, Any]],
+    out_path: Path,
+    *,
+    include_semantic_cols: bool,
+) -> None:
+    try:
+        from openpyxl import Workbook
+    except ImportError as e:
+        raise SystemExit(
+            "Writing Excel requires openpyxl. Install with: pip install openpyxl "
+            f"(see linux_requirements.txt). Original error: {e}"
+        ) from e
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "multilingual_summary"
+
+    base_headers = [
+        "model",
+        "mode",
+        "defense_template",
+        "variant",
+        "mean_ASR",
+        "n_attacks",
+    ]
+    sem_headers = [
+        "semantic_candidate_rate",
+        "mean_true_score",
+        "mean_margin",
+    ]
+    headers = base_headers + (sem_headers if include_semantic_cols else [])
+    ws.append(headers)
+
+    for row in rows:
+        line: List[Any] = [
+            row.get("model", ""),
+            row.get("mode", ""),
+            row.get("defense_template", ""),
+            row.get("variant", ""),
+            row.get("mean_ASR"),
+            row.get("n_attacks"),
+        ]
+        if include_semantic_cols:
+            line.extend(
+                [
+                    row.get("semantic_candidate_rate"),
+                    row.get("mean_true_score"),
+                    row.get("mean_margin"),
+                ]
+            )
+        ws.append(line)
+
+    wb.save(out_path)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -150,6 +217,15 @@ def main() -> None:
         "--semantic",
         action="store_true",
         help="Also report semantic_chunk_leakage_v2 aggregates (if present in JSON).",
+    )
+    ap.add_argument(
+        "--excel",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="PATH",
+        help="Write the same summary table to an Excel .xlsx file. "
+        "Optional output path; default: RESULTS_DIR/multilingual_summary.xlsx",
     )
     args = ap.parse_args()
 
@@ -175,9 +251,15 @@ def main() -> None:
     by_key_any_runs: Dict[AggregateKey, bool] = defaultdict(bool)
     have_semantic_v2 = bool(args.semantic and files and _files_have_semantic_v2(files))
 
+    victim_model_label = ""
     for fp in files:
         with open(fp, "r", encoding="utf-8") as f:
             payload = json.load(f)
+
+        if not victim_model_label:
+            vm = _victim_model_from_payload(payload)
+            if vm:
+                victim_model_label = vm
 
         dir_mode = path_to_mode.get(fp, "")
         mode = (
@@ -200,22 +282,43 @@ def main() -> None:
             by_key_mrg[key].append(mrg)
             by_key_nsem[key].append(nsem)
 
+    if not victim_model_label:
+        victim_model_label = results_dir.name
+
     print("Average success rate (mean over attacks) by defense and variant:")
-    print("(Primary metric: strict ROUGE-L ASR, threshold unchanged in pipeline)")
+    print("(Primary metric: mean_ASR = strict ROUGE-L ASR, threshold unchanged in pipeline)")
+    print(f"(Victim model: {victim_model_label})")
     if use_subdir_modes:
         print(
             f"(Multiple run modes from subdirectories of {results_dir}; "
             "mode= from JSON benchmark_condition when present, else folder name.)"
         )
+
+    excel_rows: List[Dict[str, Any]] = []
+    include_excel_semantic = bool(args.semantic and args.excel is not None)
+
     for (mode, def_name, variant), rates in sorted(by_key.items()):
         mean_rate = sum(rates) / max(1, len(rates))
         if use_subdir_modes:
             line = (
                 f"- mode={mode:32s} defense={def_name:20s} variant={variant:6s} "
-                f"mean_strict_asr={mean_rate:.3f} (n_attacks={len(rates)})"
+                f"mean_ASR={mean_rate:.3f} (n_attacks={len(rates)})"
             )
         else:
-            line = f"- defense={def_name:20s} variant={variant:6s} mean_strict_asr={mean_rate:.3f} (n_attacks={len(rates)})"
+            line = f"- defense={def_name:20s} variant={variant:6s} mean_ASR={mean_rate:.3f} (n_attacks={len(rates)})"
+
+        row_dict: Dict[str, Any] = {
+            "model": victim_model_label,
+            "mode": mode if use_subdir_modes else "",
+            "defense_template": def_name,
+            "variant": variant,
+            "mean_ASR": round(mean_rate, 6),
+            "n_attacks": len(rates),
+            "semantic_candidate_rate": None,
+            "mean_true_score": None,
+            "mean_margin": None,
+        }
+
         if args.semantic:
             sem_rates = by_key_sem.get((mode, def_name, variant), [])
             mx_rates = by_key_mx.get((mode, def_name, variant), [])
@@ -229,6 +332,9 @@ def main() -> None:
                     f" | semantic_candidate_rate={ms:.3f} "
                     f"mean_true_score={mm:.3f} mean_margin={mrg:.3f}"
                 )
+                row_dict["semantic_candidate_rate"] = round(ms, 6)
+                row_dict["mean_true_score"] = round(mm, 6)
+                row_dict["mean_margin"] = round(mrg, 6)
             elif args.semantic:
                 if not by_key_any_runs.get((mode, def_name, variant), False):
                     line += (
@@ -246,6 +352,21 @@ def main() -> None:
                 else:
                     line += " | (semantic row skipped: no aggregated rates for this key)"
         print(line)
+        excel_rows.append(row_dict)
+
+    if args.excel is not None:
+        out_xlsx = (
+            Path(args.excel).expanduser()
+            if args.excel
+            else results_dir / "multilingual_summary.xlsx"
+        )
+        out_xlsx = out_xlsx.resolve()
+        _write_excel_summary(
+            excel_rows,
+            out_xlsx,
+            include_semantic_cols=include_excel_semantic,
+        )
+        print(f"Wrote Excel summary: {out_xlsx}")
 
 
 if __name__ == "__main__":

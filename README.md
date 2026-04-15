@@ -16,8 +16,8 @@ This repository is built on top of the original Raccoon benchmark and codebase. 
 
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv venv
+source venv/bin/activate
 pip install -U pip
 pip install -r linux_requirements.txt
 ```
@@ -104,8 +104,11 @@ python run_raccoon_gang.py \
 ```bash
 python scripts/summarize_multilingual_results.py \
   --results_dir "results/[RUN_NAME]" \
-  --semantic
+  --semantic \
+  --excel
 ```
+
+`--excel` writes `multilingual_summary.xlsx` inside the `--results_dir` run folder (or pass another path: `--excel path/to/out.xlsx`).
 
 ### Run all three defense modes
 
