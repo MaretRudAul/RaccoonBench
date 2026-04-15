@@ -155,6 +155,14 @@ Results are written under `results/` (for example `results/run_YYYYMMDD_HHMMSS/`
 - mean true semantic score
 - mean semantic margin
 
+To generate figures from run data, copy it into root file `multilingual_results.xlsx`, then run:
+
+```bash
+python scripts/plot_results.py
+```
+
+This creates `figures/mean_asr_by_variant.png` and `figures/semantic_candidate_rate_by_variant.png`.
+
 ## Acknowledgment
 
 Polyglot-Raccoon is built on top of the original Raccoon benchmark and codebase. 
