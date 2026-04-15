@@ -1,88 +1,96 @@
-# Raccoon
-**Raccoon**  is a test bench for prompt extraction attacks on LLM-Integrated Applications. With the proliferation of LLM-integrated applications such as GPT-s, millions are deployed, offering valuable services through proprietary instruction prompts. These systems, however, are prone to prompt extraction attacks through meticulously designed queries. To help mitigate this problem, we introduce the **Raccoon** benchmark which comprehensively evaluates a model's susceptibility to prompt extraction attacks. 
+# Polyglot-Raccoon
 
-![Raccoon](figures/raccoon.png)
+Polyglot-Raccoon is a multilingual extension of the Raccoon prompt-extraction benchmark. It studies prompt extraction against hidden application-level system prompts in LLM-integrated applications by adapting a selected subset of Raccoon attacks into multilingual variants and measuring how attack language changes prompt extraction success and behavior.
 
-We evaluate systems 
+This repository is built on top of the original Raccoon benchmark and codebase. Polyglot-Raccoon is a scoped multilingual extension with additional features, not a benchmark built from scratch.
 
-- Under both defenseless and defended scenarios, employing a dual approach to evaluate the effectiveness of existing defenses and the resilience of the models. 
-- The benchmark encompasses 14 categories of prompt extraction attacks, with additional compounded attacks that closely mimic the strategies of potential attackers.
-- A diverse collection of defense templates. This array is, to our knowledge, the most extensive compilation of prompt theft attacks and defense mechanisms to date. 
+## What this repository adds
 
-![Raccoon](figures/model_susceptibility_max.png)
-
-
-
-## News and Updates
-
-- [05/24/2024] Publish initial release of Raccoon (GPTs data will be released soon)
-- [05/17/2024] Our paper has been accepted by ACL 2024 Findings
-
-## Table of Contents
-
-- [Raccoon](#raccoon)
-  - [News and Updates](#news-and-updates)
-  - [Table of Contents](#table-of-contents)
-  - [Installation](#installation)
-  - [Usage](#usage)
-      - [1. Run benchmark on Singular attacks, Defenseless GPTs, GPT-3.5-0125](#1-run-benchmark-on-singular-attacks-defenseless-gpts-gpt-35-0125)
-      - [2. Run benchmark on Top 5 Singular attacks, Defended GPTs, GPT-3.5-0125](#2-run-benchmark-on-top-5-singular-attacks-defended-gpts-gpt-35-0125)
-      - [3. Run benchmark on Compound attacks, Defenseless GPTs, GPT-3.5-0125](#3-run-benchmark-on-compound-attacks-defenseless-gpts-gpt-35-0125)
-      - [4. Run benchmark on Compound attacks, Defended GPTs, GPT-3.5-0125](#4-run-benchmark-on-compound-attacks-defended-gpts-gpt-35-0125)
-  - [Components](#components)
+- Multilingual attack expansion on top of the Raccoon attack pipeline
+- Four attack language variants: `EN`, `BN`, `ZU`, `BN+ZU`
+- Translate-to-English defense condition (`--translate_attack_to_english`)
+- System-security-suffix defense condition (`--append_system_security_suffix`)
+- Multilingual result summarization with semantic leakage metrics
 
 ## Installation
 
-> ```bash
-> $ conda create --name <env> --file requirements.txt
-> ```
 
-## Usage
-
-Note: In the upstream dataset layout, the GPT system prompts live in `Data/GPTs50/` and `Data/GPTs146/` (each subfolder contains a `system_prompt.md`). The README examples below use `Data/GPTs146` by default.
-
-#### 1. Run benchmark on Singular attacks, Defenseless GPTs, GPT-3.5-0125
-
-```shell
-python run_raccoon_gang.py \
---model_name gpt-3.5-0125 \
---gpts_path "./Data/GPTs146" \
---attack_path "./Data/attacks/singular_attacks" \
---ref_def_path "./Data/reference/gpts196_defense_prompt.json" \
---def_tmpl_path "./Data/defenses/defense_template.json" \
---use_sys_template \
---use_defenseless_user_prompt
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -r linux_requirements.txt
 ```
 
-#### Multilingual attack expansion (EN/BN/ZU/BN+ZU)
+## Dataset layout
 
-This mode keeps the hidden/system prompt in English and expands each base English attack prompt into 4 variants:
+- Prompt folders are under `Data/GPTs50/` and `Data/GPTs146/`.
+- Each GPT/app subdirectory contains `system_prompt.md`.
+- Attack sets are under `Data/attacks/` (for example `singular_attacks_deflesstop5`).
 
-- `EN` (original)
-- `BN` (Bengali translation)
-- `ZU` (Zulu translation)
-- `BN+ZU` (first half Bengali + second half Zulu; deterministic split)
+## Attack variants
 
-Translation is LLM-based, deterministic (temperature 0), and cached on disk.
+- `EN`: original English attack
+- `BN`: Bengali translation
+- `ZU`: Zulu translation
+- `BN+ZU`: deterministic mixed-language attack
 
-`.env` support:
+`BN+ZU` is constructed by splitting the original English attack into two parts, translating one part to Bengali and the other to Zulu, then concatenating in original order to preserve attack intent.
 
-- Put your `.env` in the repo root (same folder as `run_raccoon_gang.py`).
-- `run_raccoon_gang.py` will automatically load it **if** `python-dotenv` is installed.
-- If you do not want to install `python-dotenv`, you can instead load it in your shell:
+## Defense conditions
 
-```shell
-set -a; source .env; set +a
+- **undefended**: attack is submitted directly
+- **translate-to-English**: attacker query is translated to English before submission to the victim model
+- **system-security-suffix**: a fixed security suffix is appended to the application-level system prompt before evaluation
+
+## LLM Models (`--model_name`)
+
+The following named model options are defined in `run_raccoon_gang.py`:
+
+- `gpt-4`
+- `gpt-3.5`
+- `gpt-3.5-0613`
+- `gpt-3.5-0125`
+- `gpt-5.4-nano`
+- `gpt-5.4-nano-2026-03-17`
+- `gemini-pro`
+- `llama2_chat_70B`
+- `mixtral_8x7B`
+- `llama3.1_8b_openrouter`
+- `mixtral_8x7b_openrouter`
+- `llama3.3_70b_instruct_openrouter`
+- `gpt-5.4-nano_openrouter`
+
+You can also pass a direct provider model id as `--model_name`; unknown names are used as is.
+
+## `.env` API key setup
+
+Create a root `.env` file with the following keys:
+
+```bash
+OPENAI_API_KEY="your-openai-key"
+OPENROUTER_API_KEY="your-openrouter-key"
 ```
 
-Example (OpenRouter + Llama 3.1 8B Instruct):
+Notes:
 
-```shell
-export OPENROUTER_API_KEY="..."   # required
+- `OPENROUTER_API_KEY` is required when running victim models through `--provider openrouter`.
+- `OPENAI_API_KEY` is used for semantic embeddings (`--enable_semantic_chunk_leakage`) unless `RACCOON_SEMANTIC_EMBEDDING_API_KEY` is set.
+- `run_raccoon_gang.py` loads `.env` automatically if `python-dotenv` is installed (included in `linux_requirements.txt`).
+
+## Main commands
+
+Run commands from the repository root.
+
+### Run multilingual benchmark
+
+```bash
+# replace --model_name with any model
 python run_raccoon_gang.py \
   --provider openrouter \
-  --model_name llama3.1_8b_openrouter \
+  --model_name llama3.3_70b_instruct_openrouter \
   --enable_multilingual_attacks \
+  --enable_semantic_chunk_leakage \
   --gpts_path "./Data/GPTs146" \
   --attack_path "./Data/attacks/singular_attacks_deflesstop5" \
   --ref_def_path "./Data/reference/gpts196_defense_prompt.json" \
@@ -91,69 +99,62 @@ python run_raccoon_gang.py \
   --use_defenseless_user_prompt
 ```
 
-Optional environment variables:
+### Summarize multilingual results
 
-- `RACCOON_TRANSLATION_MODEL`: translation model id. Default: `gpt-5.4-nano`
-- `RACCOON_TRANSLATION_PROVIDER`: `openai|openrouter|auto` (default when unset: OpenAI). `auto` is treated like `openai`; translation is independent of the victim model’s `--provider`. Use `openrouter` only when calling OpenRouter for translations.
-- `RACCOON_TRANSLATION_CACHE_PATH`: translation cache JSON path. Default: `.cache/raccoon_translation_cache.json`
-- `OPENROUTER_LLAMA31_8B_MODEL`: override `llama3.1_8b_openrouter` model id
-- `OPENROUTER_MIXTRAL_8X7B_MODEL`: override `mixtral_8x7b_openrouter` model id
-- `OPENROUTER_HTTP_REFERER`, `OPENROUTER_APP_TITLE`: optional OpenRouter headers
-
-Minimal result summary by variant:
-
-```shell
-python scripts/summarize_multilingual_results.py --results_dir "results/run_YYYYMMDD_HHMMSS"
+```bash
+python scripts/summarize_multilingual_results.py \
+  --results_dir "results/[RUN_NAME]" \
+  --semantic
 ```
 
-#### 2. Run benchmark on Top 5 Singular attacks, Defended GPTs, GPT-3.5-0125
+### Run all three defense modes
 
-```shell
+```bash
+# replace --model_name with any model
 python run_raccoon_gang.py \
---model_name gpt-3.5-0125 \
---gpts_path "./Data/GPTs146" \
---attack_path "./Data/attacks/singular_attacks_deflesstop5" \
---ref_def_path "./Data/reference/gpts196_defense_prompt.json" \
---def_tmpl_path "./Data/defenses/defense_template.json" \
---use_sys_template \
---use_custom_defenses
+  --provider openrouter \
+  --model_name llama3.3_70b_instruct_openrouter \
+  --run_all_three_benchmark_modes \
+  --enable_multilingual_attacks \
+  --enable_semantic_chunk_leakage \
+  --gpts_path "./Data/GPTs146" \
+  --attack_path "./Data/attacks/singular_attacks_deflesstop5" \
+  --ref_def_path "./Data/reference/gpts196_defense_prompt.json" \
+  --def_tmpl_path "./Data/defenses/defense_template.json" \
+  --use_sys_template \
+  --use_defenseless_user_prompt
 ```
 
-#### 3. Run benchmark on Compound attacks, Defenseless GPTs, GPT-3.5-0125
+## Multilingual options
 
-```shell
-python run_raccoon_gang.py \
---model_name gpt-3.5-0125 \
---gpts_path "./Data/GPTs146" \
---attack_path "./Data/attacks/compound_attacks" \
---ref_def_path "./Data/reference/gpts196_defense_prompt.json" \
---def_tmpl_path "./Data/defenses/defense_template.json" \
---use_sys_template \
---use_defenseless_user_prompt
-```
+The following options can be used:
 
-#### 4. Run benchmark on Compound attacks, Defended GPTs, GPT-3.5-0125
+- `--enable_multilingual_attacks`: enable EN/BN/ZU/BN+ZU attack expansion
+- `--multilingual_variants`: select subset (`en,bn,zu,bn+zu`)
+- `--enable_semantic_chunk_leakage`: enable semantic leakage analysis during benchmark runs
+- `--translate_attack_to_english`: enable translate-to-English defense mode
+- `--append_system_security_suffix`: enable system-security-suffix defense mode
+- `--run_all_three_benchmark_modes`: run undefended + translate-to-English + system-security-suffix in one invocation
 
-```shell
-python run_raccoon_gang.py \
---model_name gpt-3.5-0125 \
---gpts_path "./Data/GPTs146" \
---attack_path "./Data/attacks/compound_attacks" \
---ref_def_path "./Data/reference/gpts196_defense_prompt.json" \
---def_tmpl_path "./Data/defenses/defense_template.json" \
---use_sys_template \
---use_custom_defenses
-```
+Useful related options:
 
-## Components
+- `--translation_provider`, `--translation_model`
+- `--attack_to_english_provider`, `--attack_to_english_model`
 
-- **Loader**: an iterator wrapper for loading sampled GPTs
-- **SysPrompt**: a parser class that cleans the collected system prompt and output the prompt in customized formats
-- **TiktokenWrapper**: a Tiktoken tokenizer wrapper used in ROUGE score calculate to support multilingual input.
-- **Raccoon**: the test bench class that runs injection attacks on given GPTs files.
+## Results
 
-## Attack Categories
+Results are written under `results/` (for example `results/run_YYYYMMDD_HHMMSS/`). Three benchmark results for GPT 5.4-nano, GPT 3.5-turbo-0125, and Llama 3.3 70B Instruct have been included in this repository.
 
-![Raccoon](figures/Attack_Categories.png)
+`scripts/summarize_multilingual_results.py --semantic` can report:
 
-## Citation
+- mean ASR by defense/mode condition and language variant
+- semantic candidate rate
+- mean true semantic score
+- mean semantic margin
+
+## Acknowledgment
+
+Polyglot-Raccoon is built on top of the original Raccoon benchmark and codebase. 
+
+Wang, Junlin & Yang, Tianyi & Xie, Roy & Dhingra, Bhuwan. (2024). Raccoon: Prompt Extraction Benchmark of LLM-Integrated Applications. 13349-13365. 10.18653/v1/2024.findings-acl.791. 
+
