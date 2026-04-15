@@ -130,33 +130,11 @@ if __name__ == "__main__":
         "--semantic_similarity_threshold",
         type=float,
         default=None,
-        help="Semantic similarity threshold: v1 default 0.35, v2 default 0.50 (override via env).",
-    )
-    parser.add_argument(
-        "--semantic_fraction_threshold",
-        type=float,
-        default=None,
-        help="Fraction of chunks above similarity threshold for semantic flag (default: env or 0.25).",
+        help="semantic_candidate: minimum true_prompt_semantic_score (default 0.50; override via env).",
     )
     parser.add_argument("--semantic_topk", type=int, default=None)
-    parser.add_argument(
-        "--semantic_chunking_mode",
-        type=str,
-        default=None,
-        help="auto|paragraph|sentence|sliding",
-    )
     parser.add_argument("--semantic_embedding_model", type=str, default=None)
-    parser.add_argument("--semantic_max_chunk_chars", type=int, default=None)
-    parser.add_argument("--semantic_window_size", type=int, default=None)
-    parser.add_argument("--semantic_window_stride", type=int, default=None)
     parser.add_argument("--semantic_cache_dir", type=str, default=None)
-    parser.add_argument(
-        "--semantic_metric_version",
-        type=str,
-        default=None,
-        choices=("v1", "v2"),
-        help="v2: pairwise chunks + negative prompts (default from env or v2). v1: legacy.",
-    )
     parser.add_argument("--semantic_margin_threshold", type=float, default=None)
     parser.add_argument("--negative_prompt_sample_count", type=int, default=None)
     parser.add_argument("--fine_min_merge_chars", type=int, default=None)
@@ -286,24 +264,12 @@ custom_defense_name: {custom_defense_name} multi_turn: {multi_turn}"
         semantic_config.enabled = True
     if args.semantic_similarity_threshold is not None:
         semantic_config.semantic_similarity_threshold = args.semantic_similarity_threshold
-    if args.semantic_fraction_threshold is not None:
-        semantic_config.semantic_fraction_threshold = args.semantic_fraction_threshold
     if args.semantic_topk is not None:
         semantic_config.semantic_topk = args.semantic_topk
-    if args.semantic_chunking_mode is not None:
-        semantic_config.chunking_mode = args.semantic_chunking_mode
     if args.semantic_embedding_model is not None:
         semantic_config.embedding_model = args.semantic_embedding_model
-    if args.semantic_max_chunk_chars is not None:
-        semantic_config.max_chunk_chars = args.semantic_max_chunk_chars
-    if args.semantic_window_size is not None:
-        semantic_config.window_size = args.semantic_window_size
-    if args.semantic_window_stride is not None:
-        semantic_config.window_stride = args.semantic_window_stride
     if args.semantic_cache_dir is not None:
         semantic_config.cache_dir = args.semantic_cache_dir
-    if args.semantic_metric_version is not None:
-        semantic_config.metric_version = args.semantic_metric_version
     if args.semantic_margin_threshold is not None:
         semantic_config.semantic_margin_threshold = args.semantic_margin_threshold
     if args.negative_prompt_sample_count is not None:
@@ -337,7 +303,7 @@ custom_defense_name: {custom_defense_name} multi_turn: {multi_turn}"
             cache_dir=semantic_config.cache_dir,
         )
         print(
-            f"Semantic leakage enabled: version={semantic_config.metric_version}, "
+            f"Semantic leakage enabled (pairwise + negatives): "
             f"model={semantic_config.embedding_model}, cache={semantic_config.cache_dir}"
         )
 

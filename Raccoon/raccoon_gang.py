@@ -17,10 +17,7 @@ from datetime import datetime
 from Raccoon.loader import Loader
 from Raccoon.prompt import SysPrompt
 from Raccoon.tokenizer import TiktokenWrapper
-from Raccoon.semantic_chunk_leakage import (
-    SemanticChunkLeakageConfig,
-    compute_chunk_semantic_scores,
-)
+from Raccoon.semantic_chunk_leakage import SemanticChunkLeakageConfig
 from Raccoon.semantic_embedding import EmbeddingProvider
 from Raccoon.attack_to_english_defense import (
     ATTACK_TO_ENGLISH_PROMPT_VERSION,
@@ -300,7 +297,6 @@ class RaccoonGang:
         parsed_response,
         score,
         success,
-        semantic_chunk_leakage=None,
         semantic_chunk_leakage_v2=None,
         *,
         original_attack_prompt: Optional[str] = None,
@@ -317,8 +313,6 @@ class RaccoonGang:
             "success": success,
             "victim_model": self.model,
         }
-        if semantic_chunk_leakage is not None:
-            d["semantic_chunk_leakage"] = semantic_chunk_leakage
         if semantic_chunk_leakage_v2 is not None:
             d["semantic_chunk_leakage_v2"] = semantic_chunk_leakage_v2
         if benchmark_condition is not None:
@@ -360,32 +354,22 @@ class RaccoonGang:
             score = self.evaluate(user_sys_prompt, parsed_response)
             success = 1 if score >= self.suc_threshold else 0
 
-            semantic_chunk_leakage = None
             semantic_chunk_leakage_v2 = None
             if (
                 self.semantic_embedder is not None
                 and self.semantic_config is not None
                 and self.semantic_config.enabled
             ):
-                mv = (self.semantic_config.metric_version or "v2").lower()
-                if mv == "v2":
-                    from Raccoon.semantic_metric_v2 import compute_semantic_metric_v2
+                from Raccoon.semantic_metric_v2 import compute_semantic_metric_v2
 
-                    semantic_chunk_leakage_v2 = compute_semantic_metric_v2(
-                        user_sys_prompt,
-                        parsed_response,
-                        self.semantic_embedder,
-                        self.semantic_config,
-                        other_hidden_prompts=self._semantic_prompt_pool,
-                        sample_key=semantic_sample_key or "unknown",
-                    )
-                else:
-                    semantic_chunk_leakage = compute_chunk_semantic_scores(
-                        user_sys_prompt,
-                        parsed_response,
-                        self.semantic_embedder,
-                        self.semantic_config,
-                    )
+                semantic_chunk_leakage_v2 = compute_semantic_metric_v2(
+                    user_sys_prompt,
+                    parsed_response,
+                    self.semantic_embedder,
+                    self.semantic_config,
+                    other_hidden_prompts=self._semantic_prompt_pool,
+                    sample_key=semantic_sample_key or "unknown",
+                )
 
             logging.info(
                 f"--------------System prompt:------------------\n{full_sys_prompt}\n"
@@ -402,7 +386,6 @@ class RaccoonGang:
                 parsed_response,
                 score,
                 success,
-                semantic_chunk_leakage=semantic_chunk_leakage,
                 semantic_chunk_leakage_v2=semantic_chunk_leakage_v2,
                 original_attack_prompt=original_attack_prompt,
                 benchmark_condition=benchmark_condition,
@@ -569,7 +552,6 @@ class RaccoonGang:
                         self.semantic_config
                         and self.semantic_config.enabled
                         and self.semantic_embedder is not None
-                        and (self.semantic_config.metric_version or "v2").lower() == "v2"
                     ):
                         from Raccoon.semantic_pool import build_semantic_prompt_pool
 

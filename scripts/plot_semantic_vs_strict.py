@@ -31,19 +31,11 @@ def _variant_from_payload(payload: Dict[str, Any]) -> str:
     return str(variant)
 
 
-def _gpt_level_rates(payload: Dict[str, Any]) -> Tuple[float, float, float, bool]:
-    """Returns (strict_success, semantic_flag_rate, mean_score, is_v2)."""
+def _gpt_level_rates(payload: Dict[str, Any]) -> Tuple[float, float, float]:
+    """Returns (strict_success_rate, semantic_candidate_rate, mean_true_score)."""
     runs = payload.get("runs", [])
     if not runs:
-        return 0.0, 0.0, 0.0, False
-    v2 = False
-    for r in runs[:3]:
-        for att in r.get("atk_info", []):
-            if isinstance(att.get("semantic_chunk_leakage_v2"), dict):
-                v2 = True
-                break
-        if v2:
-            break
+        return 0.0, 0.0, 0.0
     strict_hits = 0
     sem_hits = 0
     scores: List[float] = []
@@ -55,27 +47,18 @@ def _gpt_level_rates(payload: Dict[str, Any]) -> Tuple[float, float, float, bool
         for att in atk_info:
             if att.get("success") == 1:
                 st = 1
-            if v2:
-                sc = att.get("semantic_chunk_leakage_v2") or {}
-                if sc.get("error") is None:
-                    if sc.get("semantic_candidate") == 1:
-                        se = 1
-                    v = sc.get("true_prompt_semantic_score")
-                    if isinstance(v, (int, float)):
-                        mx = max(mx, float(v))
-            else:
-                sc = att.get("semantic_chunk_leakage") or {}
-                if sc.get("error") is None:
-                    if sc.get("semantic_leakage_success") == 1:
-                        se = 1
-                    v = sc.get("max_chunk_similarity")
-                    if isinstance(v, (int, float)):
-                        mx = max(mx, float(v))
+            sc = att.get("semantic_chunk_leakage_v2") or {}
+            if sc.get("error") is None:
+                if sc.get("semantic_candidate") == 1:
+                    se = 1
+                v = sc.get("true_prompt_semantic_score")
+                if isinstance(v, (int, float)):
+                    mx = max(mx, float(v))
         strict_hits += st
         sem_hits += se
         scores.append(mx)
     n = len(runs)
-    return strict_hits / n, sem_hits / n, sum(scores) / max(1, len(scores)), v2
+    return strict_hits / n, sem_hits / n, sum(scores) / max(1, len(scores))
 
 
 def main() -> None:
@@ -89,7 +72,7 @@ def main() -> None:
     )
     args = ap.parse_args()
     rd = Path(args.results_dir)
-    rows: List[Tuple[str, str, str, float, float, float, bool]] = []
+    rows: List[Tuple[str, str, str, float, float, float]] = []
 
     import json
 
@@ -99,14 +82,13 @@ def main() -> None:
         def_name = fp.name.split("_def_", 1)[1].rsplit(".json", 1)[0]
         variant = _variant_from_payload(payload)
         atk_id = fp.name.split("_def_", 1)[0]
-        s_strict, s_sem, s_mx, _v2 = _gpt_level_rates(payload)
-        rows.append((atk_id, def_name, variant, s_strict, s_sem, s_mx, _v2))
+        s_strict, s_sem, s_mx = _gpt_level_rates(payload)
+        rows.append((atk_id, def_name, variant, s_strict, s_sem, s_mx))
 
     by_cond: Dict[Tuple[str, str], List[Tuple[float, float, float]]] = defaultdict(
         list
     )
-    any_v2 = any(r[-1] for r in rows)
-    for _, def_name, variant, s_strict, s_sem, s_mx, _ in rows:
+    for _, def_name, variant, s_strict, s_sem, s_mx in rows:
         by_cond[(def_name, variant)].append((s_strict, s_sem, s_mx))
 
     agg: List[Tuple[str, str, float, float, float]] = []
@@ -123,8 +105,8 @@ def main() -> None:
         )
 
     w = csv.writer(sys.stdout)
-    sem_hdr = "mean_semantic_candidate_rate" if any_v2 else "mean_semantic_leakage_rate"
-    score_hdr = "mean_true_prompt_score" if any_v2 else "mean_max_chunk_similarity"
+    sem_hdr = "mean_semantic_candidate_rate"
+    score_hdr = "mean_true_prompt_score"
     w.writerow(
         ["defense", "variant", "mean_strict_asr", sem_hdr, score_hdr]
     )
@@ -150,7 +132,7 @@ def main() -> None:
     fig, ax = plt.subplots(figsize=(max(8, len(agg) * 0.5), 4))
     w_bar = 0.35
     ax.bar([i - w_bar / 2 for i in x], strict_y, w_bar, label="Strict ROUGE ASR")
-    sem_label = "Semantic candidate (v2)" if any_v2 else "Semantic leakage rate (v1)"
+    sem_label = "Semantic candidate rate"
     ax.bar([i + w_bar / 2 for i in x], sem_y, w_bar, label=sem_label)
     ax.set_xticks(list(x))
     ax.set_xticklabels(labels, fontsize=7)

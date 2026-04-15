@@ -74,54 +74,12 @@ def _attack_success_from_runs(payload: Dict[str, Any]) -> float:
     return successes / max(1, len(runs))
 
 
-def _semantic_from_runs(payload: Dict[str, Any]) -> Tuple[float, float, int]:
+def _files_have_semantic_v2(files: List[Path]) -> bool:
     """
-    Per-GPT: max semantic_leakage_success across attempts, max max_chunk_similarity.
-    Returns (mean_semantic_rate, mean_max_chunk_sim, n_gpts_with_semantic_field).
-    """
-    runs = payload.get("runs", [])
-    if not runs:
-        return 0.0, 0.0, 0
-    sem_hits = 0
-    max_sims: List[float] = []
-    n_with = 0
-    for r in runs:
-        atk_info = r.get("atk_info", [])
-        hit = 0
-        mx = 0.0
-        saw = False
-        for att in atk_info:
-            sc = att.get("semantic_chunk_leakage")
-            if not isinstance(sc, dict):
-                continue
-            saw = True
-            if sc.get("error") is None:
-                if sc.get("semantic_leakage_success") == 1:
-                    hit = 1
-                v = sc.get("max_chunk_similarity")
-                if isinstance(v, (int, float)):
-                    mx = max(mx, float(v))
-        if saw:
-            n_with += 1
-        sem_hits += hit
-        max_sims.append(mx)
-    return (
-        sem_hits / max(1, len(runs)),
-        sum(max_sims) / max(1, len(max_sims)),
-        n_with,
-    )
+    True if any result file contains semantic_chunk_leakage_v2 in atk_info.
 
-
-def _detect_semantic_metric_version(files: List[Path]) -> str:
+    Scans all files: multi-mode runs may list incomplete subfolders first.
     """
-    Inspect result JSONs until we find semantic metrics.
-
-    We cannot use only ``files[0]``: multi-mode runs may sort e.g. ``translate_attack_to_english/``
-    first, and those files may have empty ``runs`` (incomplete/crashed jobs)
-    while ``undefended/`` still holds full v2 payloads.
-    Returns 'v2', 'v1', or ''.
-    """
-    saw_v1 = False
     for fp in files:
         try:
             with open(fp, encoding="utf-8") as f:
@@ -131,10 +89,8 @@ def _detect_semantic_metric_version(files: List[Path]) -> str:
         for r in payload.get("runs", []):
             for att in r.get("atk_info", []):
                 if isinstance(att.get("semantic_chunk_leakage_v2"), dict):
-                    return "v2"
-                if isinstance(att.get("semantic_chunk_leakage"), dict):
-                    saw_v1 = True
-    return "v1" if saw_v1 else ""
+                    return True
+    return False
 
 
 def _semantic_v2_from_runs(
@@ -193,7 +149,7 @@ def main() -> None:
     ap.add_argument(
         "--semantic",
         action="store_true",
-        help="Also report semantic_chunk_leakage aggregates (if present in JSON).",
+        help="Also report semantic_chunk_leakage_v2 aggregates (if present in JSON).",
     )
     args = ap.parse_args()
 
@@ -217,10 +173,7 @@ def main() -> None:
     by_key_nsem: Dict[AggregateKey, list] = defaultdict(list)
     by_key_mrg: Dict[AggregateKey, list] = defaultdict(list)
     by_key_any_runs: Dict[AggregateKey, bool] = defaultdict(bool)
-    sem_metric_version = ""
-    if args.semantic and files:
-        sem_metric_version = _detect_semantic_metric_version(files)
-    use_v2 = sem_metric_version == "v2"
+    have_semantic_v2 = bool(args.semantic and files and _files_have_semantic_v2(files))
 
     for fp in files:
         with open(fp, "r", encoding="utf-8") as f:
@@ -240,18 +193,12 @@ def main() -> None:
         if payload.get("runs"):
             by_key_any_runs[key] = True
 
-        if args.semantic:
-            if use_v2:
-                sr, mx, mrg, nsem = _semantic_v2_from_runs(payload)
-                by_key_sem[key].append(sr)
-                by_key_mx[key].append(mx)
-                by_key_mrg[key].append(mrg)
-                by_key_nsem[key].append(nsem)
-            else:
-                sr, mx, nsem = _semantic_from_runs(payload)
-                by_key_sem[key].append(sr)
-                by_key_mx[key].append(mx)
-                by_key_nsem[key].append(nsem)
+        if args.semantic and have_semantic_v2:
+            sr, mx, mrg, nsem = _semantic_v2_from_runs(payload)
+            by_key_sem[key].append(sr)
+            by_key_mx[key].append(mx)
+            by_key_mrg[key].append(mrg)
+            by_key_nsem[key].append(nsem)
 
     print("Average success rate (mean over attacks) by defense and variant:")
     print("(Primary metric: strict ROUGE-L ASR, threshold unchanged in pipeline)")
@@ -273,29 +220,31 @@ def main() -> None:
             sem_rates = by_key_sem.get((mode, def_name, variant), [])
             mx_rates = by_key_mx.get((mode, def_name, variant), [])
             nsem = by_key_nsem.get((mode, def_name, variant), [0])
-            if sem_rates and max(nsem) > 0:
+            if have_semantic_v2 and sem_rates and max(nsem) > 0:
                 ms = sum(sem_rates) / len(sem_rates)
                 mm = sum(mx_rates) / len(mx_rates)
-                if use_v2:
-                    mrs = by_key_mrg.get((mode, def_name, variant), [])
-                    mrg = sum(mrs) / len(mrs) if mrs else 0.0
-                    line += f" | v2 candidate_rate={ms:.3f} mean_true_score={mm:.3f} mean_margin={mrg:.3f}"
-                else:
-                    line += f" | mean_semantic_leak_rate={ms:.3f} mean_max_chunk_sim={mm:.3f}"
-            else:
+                mrs = by_key_mrg.get((mode, def_name, variant), [])
+                mrg = sum(mrs) / len(mrs) if mrs else 0.0
+                line += (
+                    f" | semantic_candidate_rate={ms:.3f} "
+                    f"mean_true_score={mm:.3f} mean_margin={mrg:.3f}"
+                )
+            elif args.semantic:
                 if not by_key_any_runs.get((mode, def_name, variant), False):
                     line += (
                         " | (no semantic summary: saved JSON has empty "
                         "\"runs\" — benchmark did not record GPTs for this row; "
                         "re-run that mode or check logs, not a backfill issue)"
                     )
-                elif not sem_metric_version:
-                    line += " | (no semantic_* fields found in any result file)"
-                else:
+                elif not have_semantic_v2:
+                    line += " | (no semantic_chunk_leakage_v2 in any result file under this run)"
+                elif sem_rates and max(nsem) == 0:
                     line += (
-                        " | (runs present but no semantic_chunk_leakage(_v2) in atk_info; "
-                        "try scripts/backfill_semantic_metrics_v2.py or v1 backfill)"
+                        " | (runs present but no usable semantic_chunk_leakage_v2 in atk_info; "
+                        "python scripts/backfill_semantic_metrics.py --results_dir ... --in_place)"
                     )
+                else:
+                    line += " | (semantic row skipped: no aggregated rates for this key)"
         print(line)
 
 
